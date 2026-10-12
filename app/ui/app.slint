@@ -1,0 +1,799 @@
+import { Theme, ThemeMode } from "theme.slint";
+// Barlow (SIL OFL 1.1, see fonts/OFL.txt), embedded so the app looks the same on every PC.
+import "fonts/Barlow-Regular.ttf";
+import "fonts/Barlow-SemiBold.ttf";
+import "fonts/BarlowSemiCondensed-SemiBold.ttf";
+import { Avatar, Button, Dots, GameTile, IconButton, Segmented, Swatch, TextButton, Toast, Toggle } from "components.slint";
+
+export { Theme, ThemeMode }
+
+export enum GameKind { valorant, league }
+
+export struct RankView {
+    known: bool,
+    tier: string,
+    points: string,
+    level: int,
+    // "hace 3 min": when the rank was read from the game.
+    updated: string,
+}
+
+export struct AccountView {
+    initials: string,
+    name: string,
+    tag: string,
+    region: string,
+    has-valorant: bool,
+    has-league: bool,
+    valorant: RankView,
+    league: RankView,
+    // "hace 3 h"; empty when never used.
+    last-used: string,
+    active: bool,
+}
+
+component Label inherits Text {
+    color: Theme.muted;
+    font-size: 12px;
+}
+
+// One of the stacked content panels; fades and slides a little when it shows or hides.
+component Panel inherits Rectangle {
+    in property <bool> shown;
+    in property <length> offset: 12px;
+
+    opacity: shown ? 1 : 0;
+    x: shown ? 0 : offset;
+    visible: self.opacity > 0.01;
+    animate opacity, x { duration: 180ms; easing: ease-out; }
+}
+
+export component AppWindow inherits Window {
+    title: "ALTR";
+    icon: @image-url("icons/altr.svg");
+    preferred-width: 720px;
+    preferred-height: 440px;
+    min-width: 600px;
+    min-height: 400px;
+    background: Theme.bg;
+    default-font-family: "Barlow";
+    default-font-size: 13px;
+
+    in property <[AccountView]> accounts;
+    in property <string> version;
+    // Official icons from the Riot install; empty images fall back to a letter.
+    in property <image> valorant-icon;
+    in property <image> league-icon;
+    in-out property <int> selected: 0;
+    in-out property <GameKind> game: GameKind.valorant;
+    in-out property <GameKind> default-game: GameKind.valorant;
+    in-out property <bool> settings-open;
+    // A background action is running; its step is shown in the bottom bar.
+    in property <bool> busy;
+    in property <string> progress;
+    // 0–1 while the step has measurable progress (game updates), negative otherwise.
+    in property <float> progress-fraction: -1;
+    // The running action may update `updating-game` (an update, or "Jugar" on an outdated game).
+    in property <bool> updating;
+    in property <GameKind> updating-game;
+    // The game opens by itself when the running update finishes.
+    in property <bool> play-after;
+    // A game update is waiting.
+    in property <bool> valorant-update;
+    in property <bool> league-update;
+    in property <bool> can-cancel;
+    // A newer ALTR release, e.g. "0.2.0"; empty when up to date or not installed via the Setup.
+    in property <string> app-update;
+    // Result of the last action, shown as a toast.
+    in property <string> toast-text;
+    in property <bool> toast-error;
+    in-out property <bool> toast-visible;
+    in-out property <bool> confirm-switch: true;
+    // Account waiting for confirmation in the dialog, -1 when closed.
+    in-out property <int> pending: -1;
+    // The dialog asks to remove `pending` instead of switching to it.
+    in-out property <bool> pending-remove;
+
+    callback play(GameKind);
+    callback update(GameKind);
+    callback queue-play();
+    callback switch-account(int);
+    callback remove-account(int);
+    callback add-account();
+    callback cancel();
+    callback install-app-update();
+    callback settings-changed();
+
+    function request-switch(i: int) {
+        if (busy) {
+            return;
+        }
+        settings-open = false;
+        if (accounts[i].active) {
+            select(i);
+        } else if (confirm-switch) {
+            pending-remove = false;
+            pending = i;
+        } else {
+            select(i);
+            switch-account(i);
+        }
+    }
+
+    function request-remove(i: int) {
+        if (!busy) {
+            pending-remove = true;
+            pending = i;
+        }
+    }
+
+    function confirm-pending() {
+        if (pending-remove) {
+            remove-account(pending);
+        } else {
+            // Show the target while it switches; a failure re-selects the active account.
+            select(pending);
+            switch-account(pending);
+        }
+        pending = -1;
+    }
+
+    property <AccountView> current: accounts[selected];
+    property <bool> is-valorant: game == GameKind.valorant;
+    property <RankView> rank: is-valorant ? current.valorant : current.league;
+    property <bool> needs-update: is-valorant ? valorant-update : league-update;
+    // The selected game is the one being updated right now.
+    property <bool> selected-updating: busy && updating && updating-game == game && progress-fraction >= 0;
+
+    // Ring progress for a game tile: shown only while that game updates and isn't selected.
+    pure function ring(g: GameKind) -> float {
+        return busy && updating && updating-game == g && game != g ? progress-fraction : -1;
+    }
+
+    // Game-specific content fades out, the game changes, then it fades back in.
+    property <GameKind> next-game;
+    property <bool> fading;
+    public function show-game(g: GameKind) {
+        next-game = g;
+        fading = true;
+    }
+    Timer {
+        interval: 150ms;
+        running: root.fading;
+        triggered => {
+            root.game = root.next-game;
+            root.fading = false;
+        }
+    }
+
+    // Shows the account's default game when it has it, otherwise the one it does have.
+    public function select(i: int) {
+        selected = i;
+        if (default-game == GameKind.valorant) {
+            show-game(accounts[i].has-valorant ? GameKind.valorant : GameKind.league);
+        } else {
+            show-game(accounts[i].has-league ? GameKind.league : GameKind.valorant);
+        }
+    }
+
+    animate background { duration: 150ms; }
+
+    HorizontalLayout {
+        Rectangle {
+            width: 68px;
+            background: Theme.sidebar;
+            animate background { duration: 150ms; }
+
+            Rectangle {
+                x: parent.width - 1px;
+                width: 1px;
+                background: Theme.border;
+            }
+
+            // Selection ring: slides to the selected avatar (avatars sit every 56px from y = 18px).
+            Rectangle {
+                x: 10px;
+                y: 14px + root.selected * 56px;
+                width: 48px;
+                height: 48px;
+                border-radius: 15px;
+                border-width: 2px;
+                border-color: Theme.accent;
+                opacity: root.settings-open || root.accounts.length == 0 ? 0 : 1;
+                animate y { duration: 220ms; easing: ease-out; }
+                animate opacity { duration: 150ms; }
+            }
+
+            VerticalLayout {
+                padding: 14px;
+                padding-top: 18px;
+                spacing: 16px;
+
+                for acc[i] in root.accounts: Rectangle {
+                    width: 40px;
+                    height: 40px;
+
+                    Avatar {
+                        initials: acc.initials;
+                        badge: acc.has-valorant && acc.has-league ? "V·L" : acc.has-valorant ? "V" : "L";
+                        selected: i == root.selected && !root.settings-open;
+                        clicked => { root.request-switch(i); }
+                        context-menu => {
+                            if (!root.busy) {
+                                menu.show();
+                            }
+                        }
+                    }
+
+                    menu := PopupWindow {
+                        x: 48px;
+                        width: 176px;
+                        height: 44px;
+
+                        Rectangle {
+                            property <bool> shown;
+                            init => { self.shown = true; }
+                            opacity: self.shown ? 1 : 0;
+                            animate opacity { duration: 120ms; }
+                            border-radius: 10px;
+                            background: Theme.card;
+                            border-width: 1px;
+                            border-color: Theme.border;
+
+                            Rectangle {
+                                x: 4px;
+                                y: 4px;
+                                width: parent.width - 8px;
+                                height: parent.height - 8px;
+                                border-radius: 7px;
+                                background: item.has-hover ? Theme.danger.with-alpha(0.12) : transparent;
+
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    spacing: 10px;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Image {
+                                            source: @image-url("icons/trash.svg");
+                                            colorize: Theme.danger;
+                                            width: 16px;
+                                            height: 16px;
+                                        }
+                                    }
+                                    Text {
+                                        text: "Eliminar cuenta";
+                                        color: Theme.danger;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                item := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.request-remove(i); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                IconButton {
+                    icon: @image-url("icons/plus.svg");
+                    clicked => {
+                        if (!root.busy) {
+                            root.add-account();
+                        }
+                    }
+                }
+                IconButton {
+                    icon: @image-url("icons/settings.svg");
+                    active: root.settings-open;
+                    clicked => { root.settings-open = !root.settings-open; }
+                }
+            }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+
+            Panel {
+                shown: root.settings-open;
+
+                VerticalLayout {
+                    padding: 24px;
+                    spacing: 20px;
+
+                    Text {
+                        text: "Ajustes";
+                        color: Theme.text;
+                        font-size: 22px;
+                        font-weight: 600;
+                    }
+
+                    VerticalLayout {
+                        spacing: 8px;
+                        Label { text: "Tema"; }
+                        // A fixed-width child would cap the layout's max width and shrink the window.
+                        Rectangle {
+                            height: 32px;
+                            Segmented {
+                                x: 0;
+                                width: 300px;
+                                items: ["Sistema", "Claro", "Oscuro"];
+                                current: Theme.mode == ThemeMode.system ? 0 : Theme.mode == ThemeMode.light ? 1 : 2;
+                                changed(i) => {
+                                    Theme.mode = i == 0 ? ThemeMode.system : i == 1 ? ThemeMode.light : ThemeMode.dark;
+                                    root.settings-changed();
+                                }
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 8px;
+                        Label { text: "Color de acento"; }
+                        HorizontalLayout {
+                            padding-top: 4px;
+                            spacing: 6px;
+                            for c[i] in Theme.accents: VerticalLayout {
+                                width: 56px;
+                                spacing: 8px;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Swatch {
+                                        swatch: c;
+                                        selected: i == Theme.accent-index;
+                                        clicked => {
+                                            Theme.accent-index = i;
+                                            root.settings-changed();
+                                        }
+                                    }
+                                }
+                                Text {
+                                    text: Theme.accent-names[i];
+                                    color: i == Theme.accent-index ? Theme.text : Theme.muted;
+                                    font-size: 11px;
+                                    horizontal-alignment: center;
+                                }
+                            }
+                            // Unbounded filler so the fixed-width columns don't cap the window width.
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 8px;
+                        Label { text: "Juego por defecto"; }
+                        Rectangle {
+                            height: 32px;
+                            Segmented {
+                                x: 0;
+                                width: 300px;
+                                items: ["Valorant", "League of Legends"];
+                                current: root.default-game == GameKind.valorant ? 0 : 1;
+                                changed(i) => {
+                                    root.default-game = i == 0 ? GameKind.valorant : GameKind.league;
+                                    root.settings-changed();
+                                }
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 8px;
+                        Label { text: "Cambio de cuenta"; }
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 10px;
+                            Toggle {
+                                checked: root.confirm-switch;
+                                toggled => {
+                                    root.confirm-switch = !root.confirm-switch;
+                                    root.settings-changed();
+                                }
+                            }
+                            Text {
+                                text: "Pedir confirmación antes de cambiar";
+                                color: Theme.text;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    Rectangle { vertical-stretch: 1; }
+
+                    Label {
+                        text: "ALTR " + root.version;
+                        font-size: 11px;
+                    }
+                }
+            }
+
+            Panel {
+                shown: !root.settings-open && root.accounts.length == 0;
+                offset: -12px;
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 14px;
+
+                    Text {
+                        text: "Añade tu primera cuenta";
+                        color: Theme.text;
+                        font-size: 20px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                    }
+                    Label {
+                        text: "Inicia sesión una vez y cambia de cuenta con un clic.";
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 8px;
+                        Button {
+                            primary: true;
+                            icon: @image-url("icons/plus.svg");
+                            loading: root.busy;
+                            text: root.busy && root.progress != "" ? root.progress : "Añadir cuenta";
+                            clicked => { root.add-account(); }
+                        }
+                        if root.can-cancel: Button {
+                            text: "Cancelar";
+                            clicked => { root.cancel(); }
+                        }
+                    }
+                }
+            }
+
+            Panel {
+                shown: !root.settings-open && root.accounts.length > 0;
+                offset: -12px;
+
+                VerticalLayout {
+                    padding: 24px;
+                    spacing: 18px;
+
+                    HorizontalLayout {
+                        spacing: 12px;
+
+                        VerticalLayout {
+                            spacing: 4px;
+                            alignment: start;
+                            HorizontalLayout {
+                                alignment: start;
+                                Text {
+                                    text: root.current.name;
+                                    color: Theme.text;
+                                    font-size: 22px;
+                                    font-weight: 600;
+                                }
+                                Text {
+                                    text: "#" + root.current.tag;
+                                    color: Theme.muted;
+                                    font-size: 22px;
+                                }
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 6px;
+                                if root.current.active: VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 7px;
+                                        height: 7px;
+                                        border-radius: 3.5px;
+                                        background: Theme.success;
+                                    }
+                                }
+                                Label {
+                                    text: (root.current.active ? "Conectada" : root.current.last-used == "" ? "Sin usar" : "Usada " + root.current.last-used)
+                                        + (root.current.region == "" ? "" : " · " + root.current.region);
+                                }
+                            }
+                        }
+
+                        Rectangle { horizontal-stretch: 1; }
+
+                        VerticalLayout {
+                            alignment: start;
+                            padding-top: 2px;
+                            HorizontalLayout {
+                                spacing: 12px;
+                                GameTile {
+                                    icon: root.valorant-icon;
+                                    fallback: "V";
+                                    selected: root.next-game == GameKind.valorant;
+                                    badge: root.valorant-update;
+                                    progress: root.ring(GameKind.valorant);
+                                    clicked => { root.show-game(GameKind.valorant); }
+                                }
+                                GameTile {
+                                    icon: root.league-icon;
+                                    fallback: "L";
+                                    selected: root.next-game == GameKind.league;
+                                    badge: root.league-update;
+                                    progress: root.ring(GameKind.league);
+                                    clicked => { root.show-game(GameKind.league); }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        height: 84px;
+                        border-radius: 10px;
+                        background: Theme.card;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        opacity: root.fading ? 0 : 1;
+                        animate opacity { duration: 150ms; }
+
+                        HorizontalLayout {
+                            padding: 16px;
+                            spacing: 14px;
+
+                            Rectangle {
+                                width: 52px;
+                                height: 52px;
+                                border-radius: 12px;
+                                background: Theme.accent-soft;
+                                Image {
+                                    source: @image-url("icons/trophy.svg");
+                                    colorize: Theme.accent;
+                                    width: 24px;
+                                    height: 24px;
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 2px;
+                                horizontal-stretch: 1;
+                                Label {
+                                    text: (root.is-valorant ? "Rango competitivo" : "Clasificatoria solo/dúo")
+                                        + (root.rank.known && root.rank.updated != "" ? " · " + root.rank.updated : "");
+                                }
+                                Text {
+                                    text: !root.rank.known ? "Sin datos todavía" : root.rank.points == "" ? root.rank.tier : root.rank.tier + " · " + root.rank.points;
+                                    color: Theme.text;
+                                    font-size: 18px;
+                                    font-weight: 600;
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 2px;
+                                Label {
+                                    text: "Nivel";
+                                    horizontal-alignment: right;
+                                }
+                                Text {
+                                    text: root.rank.known ? "\{root.rank.level}" : "—";
+                                    color: Theme.text;
+                                    font-size: 18px;
+                                    font-weight: 600;
+                                    horizontal-alignment: right;
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle { vertical-stretch: 1; }
+
+                    HorizontalLayout {
+                        spacing: 16px;
+
+                        // Progress and status of the running action, whatever game it concerns.
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 7px;
+                                if root.busy && root.progress != "": HorizontalLayout {
+                                    spacing: 8px;
+                                    if root.progress-fraction < 0: Dots {
+                                        color: Theme.muted;
+                                        horizontal-stretch: 0;
+                                    }
+                                    Text {
+                                        text: root.progress;
+                                        color: Theme.text;
+                                        font-size: 12px;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                        vertical-alignment: center;
+                                    }
+                                    if root.can-cancel && root.progress-fraction < 0: TextButton {
+                                        text: "Cancelar";
+                                        clicked => { root.cancel(); }
+                                    }
+                                }
+                                if root.busy && root.progress-fraction >= 0: HorizontalLayout {
+                                    spacing: 12px;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        horizontal-stretch: 1;
+                                        Rectangle {
+                                            height: 4px;
+                                            border-radius: 2px;
+                                            background: Theme.border;
+                                            Rectangle {
+                                                x: 0;
+                                                width: parent.width * min(root.progress-fraction, 1);
+                                                border-radius: 2px;
+                                                background: Theme.accent;
+                                                animate width { duration: 400ms; }
+                                            }
+                                        }
+                                    }
+                                    if root.can-cancel: TextButton {
+                                        text: "Cancelar";
+                                        clicked => { root.cancel(); }
+                                    }
+                                }
+                                if !root.busy && !root.needs-update && root.app-update != "": HorizontalLayout {
+                                    alignment: start;
+                                    spacing: 10px;
+                                    Label {
+                                        text: "ALTR " + root.app-update + " disponible";
+                                        vertical-alignment: center;
+                                    }
+                                    TextButton {
+                                        text: "Actualizar";
+                                        accent: true;
+                                        clicked => { root.install-app-update(); }
+                                    }
+                                }
+                                if !root.busy && root.needs-update: Label {
+                                    text: "Hay una actualización de " + (root.is-valorant ? "Valorant" : "League of Legends") + " disponible.";
+                                    overflow: elide;
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            width: 190px;
+                            height: 40px;
+                            opacity: root.fading ? 0 : 1;
+                            animate opacity { duration: 150ms; }
+                            Button {
+                                width: parent.width;
+                                primary: !root.selected-updating;
+                                emphasis: true;
+                                icon: root.selected-updating
+                                    ? (root.play-after ? @image-url("icons/check.svg") : @image-url("icons/clock.svg"))
+                                    : root.needs-update ? @image-url("icons/download.svg") : @image-url("icons/play.svg");
+                                // While its own update runs the button stays usable to queue "play".
+                                enabled: root.selected-updating || !root.busy;
+                                text: root.selected-updating
+                                    ? (root.play-after ? "Se abrirá al terminar" : "Jugar al terminar")
+                                    : root.needs-update ? "Actualizar" : "Jugar";
+                                clicked => {
+                                    if (root.selected-updating) {
+                                        root.queue-play();
+                                    } else if (root.needs-update) {
+                                        root.update(root.game);
+                                    } else {
+                                        root.play(root.game);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Above the bottom bar, centred in the content area.
+    Toast {
+        x: 68px + (root.width - 68px - self.width) / 2;
+        y: root.height - 24px - 40px - 14px - self.height + (root.toast-visible ? 0 : 6px);
+        animate y { duration: 180ms; }
+        text: root.toast-text;
+        error: root.toast-error;
+        shown: root.toast-visible;
+        dismiss => { root.toast-visible = false; }
+    }
+
+    if root.pending >= 0: Rectangle {
+        property <AccountView> target: root.accounts[root.pending];
+        property <bool> shown;
+        init => { self.shown = true; }
+        opacity: self.shown ? 1 : 0;
+        animate opacity { duration: 150ms; }
+        background: Theme.dark ? #000000A0 : #00000059;
+
+        // Clicking outside the card cancels.
+        TouchArea {
+            clicked => { root.pending = -1; }
+        }
+
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    root.pending = -1;
+                    return accept;
+                }
+                if (event.text == Key.Return) {
+                    root.confirm-pending();
+                    return accept;
+                }
+                reject
+            }
+        }
+
+        Rectangle {
+            width: 360px;
+            height: card.preferred-height;
+            border-radius: 12px;
+            background: Theme.card;
+            border-width: 1px;
+            border-color: Theme.border;
+
+            // Swallow clicks on the card so they don't cancel.
+            TouchArea { }
+
+            card := VerticalLayout {
+                padding: 20px;
+                spacing: 18px;
+
+                HorizontalLayout {
+                    spacing: 14px;
+                    VerticalLayout {
+                        alignment: start;
+                        Rectangle {
+                            width: 44px;
+                            height: 44px;
+                            border-radius: 12px;
+                            background: root.pending-remove ? Theme.danger.with-alpha(0.15) : Theme.accent-soft;
+                            Text {
+                                text: target.initials;
+                                color: root.pending-remove ? Theme.danger : Theme.accent;
+                                font-size: 15px;
+                                font-weight: 600;
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 4px;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: (root.pending-remove ? "¿Eliminar " : "¿Cambiar a ") + target.name + "#" + target.tag + "?";
+                            color: Theme.text;
+                            font-size: 15px;
+                            font-weight: 600;
+                        }
+                        Label {
+                            text: root.pending-remove
+                                ? "Se borrará su sesión guardada. Podrás volver a añadirla iniciando sesión."
+                                : "Se cerrará el Riot Client y se volverá a abrir con esta cuenta.";
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    Button {
+                        text: "Cancelar";
+                        clicked => { root.pending = -1; }
+                    }
+                    Button {
+                        primary: true;
+                        danger: root.pending-remove;
+                        text: root.pending-remove ? "Eliminar" : "Cambiar";
+                        clicked => { root.confirm-pending(); }
+                    }
+                }
+            }
+        }
+    }
+}

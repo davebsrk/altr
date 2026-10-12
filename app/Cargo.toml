@@ -1,0 +1,31 @@
+[package]
+name = "altr"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+altr-core.workspace = true
+slint = { version = "1.18", default-features = false, features = [
+    "std",
+    "compat-1-2",
+    "accessibility",
+    "backend-winit",
+    "renderer-software",
+    "software-renderer-systemfonts",
+    "software-renderer-path",
+    "unstable-winit-030",
+] }
+
+# Installer and self-updates from GitHub Releases.
+velopack = "1.2"
+
+# Decodes the official game icons the Riot Client caches (.ico with PNG or BMP frames).
+image = { version = "0.25", default-features = false, features = ["ico", "png"] }
+
+[build-dependencies]
+slint-build = "1.18"
+winresource = "0.1"
+
+[dev-dependencies]
+# Only for `cargo run --example make_icon`, which renders assets/altr.svg into assets/altr.ico.
+resvg = "0.48"

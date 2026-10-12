@@ -1,0 +1,395 @@
+import { Theme } from "theme.slint";
+
+export component Avatar inherits Rectangle {
+    in property <string> initials;
+    in property <string> badge;
+    in property <bool> selected;
+    callback clicked;
+    callback context-menu;
+
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    background: touch.has-hover && !selected ? Theme.border : Theme.card;
+    border-width: 1px;
+    border-color: Theme.border;
+    animate background { duration: 120ms; }
+
+    Text {
+        text: root.initials;
+        color: Theme.text;
+        font-size: 13px;
+        font-weight: 600;
+    }
+
+    if root.badge != "": Rectangle {
+        x: parent.width - self.width + 5px;
+        y: parent.height - self.height + 5px;
+        width: badge-text.preferred-width + 6px;
+        height: 14px;
+        border-radius: 4px;
+        background: Theme.bg;
+        border-width: 1px;
+        border-color: Theme.border;
+        badge-text := Text {
+            text: root.badge;
+            color: Theme.muted;
+            font-size: 9px;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        pointer-event(e) => {
+            if (e.button == PointerEventButton.right && e.kind == PointerEventKind.down) {
+                root.context-menu();
+            }
+        }
+    }
+}
+
+export component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <bool> active;
+    callback clicked;
+
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: active || touch.has-hover ? Theme.hover : transparent;
+
+    Image {
+        source: root.icon;
+        colorize: root.active ? Theme.accent : Theme.muted;
+        width: 20px;
+        height: 20px;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Segmented control; `current` is driven by the parent, clicks are reported via `changed`.
+export component Segmented inherits Rectangle {
+    in property <[string]> items;
+    in property <[bool]> enabled;
+    in property <int> current;
+    callback changed(int);
+
+    height: 32px;
+    border-radius: 8px;
+    background: Theme.sidebar;
+
+    HorizontalLayout {
+        padding: 3px;
+        spacing: 3px;
+        for item[i] in root.items: Rectangle {
+            property <bool> on: i == root.current;
+            property <bool> usable: root.enabled.length == 0 || root.enabled[i];
+            horizontal-stretch: 1;
+            min-width: label.preferred-width + 24px;
+            border-radius: 6px;
+            background: on ? Theme.card : touch.has-hover && usable ? Theme.hover : transparent;
+            opacity: usable ? 1 : 0.4;
+            animate background { duration: 120ms; }
+
+            label := Text {
+                text: item;
+                color: on ? Theme.text : Theme.muted;
+                font-size: 12px;
+                font-weight: on ? 600 : 400;
+            }
+
+            touch := TouchArea {
+                enabled: usable;
+                mouse-cursor: usable ? pointer : default;
+                clicked => { root.changed(i); }
+            }
+        }
+    }
+}
+
+// Three pulsing dots: a progress indicator that works with the software renderer.
+export component Dots inherits HorizontalLayout {
+    in property <color> color: Theme.text;
+
+    alignment: center;
+    spacing: 4px;
+    for i in 3: VerticalLayout {
+        alignment: center;
+        Rectangle {
+            width: 5px;
+            height: 5px;
+            border-radius: 2.5px;
+            background: root.color;
+            opacity: 0.25 + 0.75 * abs(sin(animation-tick() / 1ms * 0.25deg - i * 60deg));
+        }
+    }
+}
+
+export component Button inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> primary;
+    // Primary button for destructive actions: red whatever the accent.
+    in property <bool> danger;
+    // The main call to action: condensed caps, like a game launcher's Play button.
+    in property <bool> emphasis;
+    in property <bool> enabled: true;
+    // Shows pulsing dots instead of the icon and keeps full opacity while disabled.
+    in property <bool> loading;
+    callback clicked;
+
+    property <color> fill: danger ? Theme.danger : Theme.accent;
+    property <color> on-fill: danger ? #FFFFFF : Theme.on-accent;
+
+    height: 40px;
+    min-width: row.preferred-width + 28px;
+    border-radius: 8px;
+    border-width: primary ? 0 : 1px;
+    opacity: enabled || loading ? 1 : 0.5;
+    border-color: Theme.border;
+    background: primary
+        ? (touch.pressed ? fill.darker(0.15) : touch.has-hover ? fill.brighter(0.1) : fill)
+        : (touch.pressed ? Theme.border : touch.has-hover ? Theme.hover : transparent);
+    animate background { duration: 100ms; }
+
+    row := HorizontalLayout {
+        alignment: center;
+        spacing: 8px;
+        if root.loading: Dots {
+            color: root.primary ? root.on-fill : Theme.text;
+        }
+        if !root.loading && root.icon.width > 0: VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon;
+                colorize: root.primary ? root.on-fill : Theme.text;
+                width: 16px;
+                height: 16px;
+            }
+        }
+        Text {
+            text: root.emphasis ? root.text.to-uppercase() : root.text;
+            color: root.primary ? root.on-fill : Theme.text;
+            font-family: root.emphasis ? "Barlow Semi Condensed" : "Barlow";
+            font-size: root.emphasis ? 14px : 13px;
+            font-weight: root.primary || root.emphasis ? 600 : 400;
+            letter-spacing: root.emphasis ? 0.8px : 0;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled && !root.loading;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component Swatch inherits Rectangle {
+    in property <color> swatch;
+    in property <bool> selected;
+    callback clicked;
+
+    width: 28px;
+    height: 28px;
+    border-radius: 14px;
+    background: swatch;
+
+    Rectangle {
+        width: 36px;
+        height: 36px;
+        border-radius: 18px;
+        border-width: 2px;
+        border-color: root.selected ? Theme.text : touch.has-hover ? Theme.border : transparent;
+    }
+
+    if root.selected: Image {
+        source: @image-url("icons/check.svg");
+        colorize: #FFFFFF;
+        width: 14px;
+        height: 14px;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component Toggle inherits Rectangle {
+    in property <bool> checked;
+    callback toggled;
+
+    width: 40px;
+    height: 22px;
+    border-radius: 11px;
+    background: checked ? Theme.accent : Theme.border;
+    animate background { duration: 120ms; }
+
+    Rectangle {
+        x: root.checked ? parent.width - self.width - 3px : 3px;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: root.checked ? Theme.on-accent : Theme.muted;
+        animate x { duration: 120ms; }
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(); }
+    }
+}
+
+// Floating result message; fades out when `shown` turns false.
+export component Toast inherits Rectangle {
+    in property <string> text;
+    in property <bool> error;
+    in property <bool> shown;
+    callback dismiss;
+
+    width: row.preferred-width;
+    height: row.preferred-height;
+    border-radius: 12px;
+    background: Theme.card;
+    border-width: 1px;
+    border-color: Theme.border;
+    opacity: shown ? 1 : 0;
+    visible: self.opacity > 0;
+    animate opacity { duration: 180ms; }
+
+    row := HorizontalLayout {
+        padding: 8px;
+        padding-right: 16px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 24px;
+                height: 24px;
+                border-radius: 12px;
+                background: (root.error ? Theme.danger : Theme.success).with-alpha(0.15);
+                Image {
+                    source: root.error ? @image-url("icons/alert.svg") : @image-url("icons/check.svg");
+                    colorize: root.error ? Theme.danger : Theme.success;
+                    width: 14px;
+                    height: 14px;
+                }
+            }
+        }
+        Text {
+            text: root.text;
+            color: Theme.text;
+            font-size: 13px;
+            max-width: 440px;
+            wrap: word-wrap;
+            vertical-alignment: center;
+        }
+    }
+
+    TouchArea {
+        enabled: root.shown;
+        mouse-cursor: pointer;
+        clicked => { root.dismiss(); }
+    }
+}
+
+// Game switcher tile: the game's official icon, dimmed unless selected. `progress` (0–1)
+// draws a ring around it while the game updates; `badge` marks a waiting update.
+export component GameTile inherits Rectangle {
+    in property <image> icon;
+    in property <string> fallback;
+    in property <bool> selected;
+    in property <bool> badge;
+    in property <float> progress: -1;
+    callback clicked;
+
+    // Ring geometry in a 54×54 viewbox: an arc of radius 24 from 12 o'clock, clockwise.
+    property <float> done: min(max(root.progress, 0), 0.999);
+    property <float> end-x: 27 + 24 * sin(done * 360deg);
+    property <float> end-y: 27 - 24 * cos(done * 360deg);
+
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: Theme.card;
+    border-width: 1px;
+    border-color: selected ? Theme.accent : Theme.border;
+    animate border-color { duration: 180ms; }
+
+    Rectangle {
+        opacity: root.selected ? 1 : touch.has-hover ? 0.8 : 0.45;
+        animate opacity { duration: 180ms; }
+        if root.icon.width > 0: Image {
+            source: root.icon;
+            width: 28px;
+            height: 28px;
+        }
+        if root.icon.width == 0: Text {
+            text: root.fallback;
+            color: Theme.text;
+            font-size: 18px;
+            font-weight: 600;
+        }
+    }
+
+    if root.progress >= 0: Rectangle {
+        x: -5px;
+        y: -5px;
+        width: 54px;
+        height: 54px;
+        border-radius: 27px;
+        border-width: 3px;
+        border-color: Theme.border;
+    }
+    if root.progress >= 0: Path {
+        x: -5px;
+        y: -5px;
+        width: 54px;
+        height: 54px;
+        viewbox-width: 54;
+        viewbox-height: 54;
+        commands: "M 27 3 A 24 24 0 \{root.done > 0.5 ? 1 : 0} 1 \{root.end-x} \{root.end-y}";
+        stroke: Theme.accent;
+        stroke-width: 3px;
+        fill: transparent;
+    }
+
+    if root.badge && root.progress < 0: Rectangle {
+        x: parent.width - 9px;
+        y: 3px;
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: Theme.accent;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Small text-only action, e.g. "Cancelar" next to a progress bar.
+export component TextButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> accent;
+    callback clicked;
+
+    width: label.preferred-width;
+    label := Text {
+        text: root.text;
+        color: root.accent ? (touch.has-hover ? Theme.accent.brighter(0.2) : Theme.accent) : (touch.has-hover ? Theme.text : Theme.muted);
+        font-size: 12px;
+        font-weight: root.accent ? 600 : 400;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}

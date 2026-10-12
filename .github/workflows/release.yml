@@ -1,0 +1,55 @@
+# Push a tag like v0.2.0 to build ALTR, package it with Velopack and publish a GitHub release.
+# Installed apps find the new version through Velopack and offer to update.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that the tag matches Cargo.toml
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $cargo = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ($tag -ne $cargo) { throw "Tag v$tag doesn't match Cargo.toml version $cargo" }
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release -p altr
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      # Same version as the `velopack` crate.
+      - name: Install vpk
+        run: dotnet tool install -g vpk --version 1.2.161
+
+      # Previous release lets vpk build a small delta update; there is none for the first one.
+      - name: Download previous release
+        continue-on-error: true
+        run: vpk download github --repoUrl https://github.com/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          # Only the exe: target/release also holds build intermediates.
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/altr.exe dist/
+          vpk pack --packId ALTR --packVersion $version --packDir dist --mainExe altr.exe --packTitle ALTR --icon assets/altr.ico
+
+      - name: Publish
+        run: vpk upload github --repoUrl https://github.com/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }} --publish --releaseName "ALTR ${{ github.ref_name }}" --tag ${{ github.ref_name }}

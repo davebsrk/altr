@@ -1,0 +1,28 @@
+import { Palette } from "std-widgets.slint";
+
+export enum ThemeMode { system, light, dark }
+
+export global Theme {
+    in-out property <ThemeMode> mode: ThemeMode.system;
+    in-out property <int> accent-index: 0;
+
+    // Palette.color-scheme tracks the OS setting as long as nobody assigns it.
+    out property <bool> dark: mode == ThemeMode.system ? Palette.color-scheme == ColorScheme.dark : mode == ThemeMode.dark;
+
+    out property <color> bg: dark ? #0F1115 : #F6F7F9;
+    out property <color> sidebar: dark ? #0B0D10 : #ECEEF2;
+    out property <color> card: dark ? #171A20 : #FFFFFF;
+    out property <color> border: dark ? #262A33 : #E1E4EA;
+    out property <color> text: dark ? #E8EAED : #15171C;
+    out property <color> muted: dark ? #8A909C : #6B7280;
+    out property <color> hover: dark ? #FFFFFF0F : #0000000A;
+    out property <color> success: #22C55E;
+    out property <color> danger: dark ? #F87171 : #DC2626;
+
+    out property <[color]> accents: [#FF4655, #C8AA6E, #3B82F6, #8B5CF6, #14B8A6, #EC4899];
+    out property <[string]> accent-names: ["Rojo", "Oro", "Azul", "Violeta", "Turquesa", "Rosa"];
+    out property <color> accent: accents[accent-index];
+    out property <color> accent-soft: accent.with-alpha(0.15);
+    // Gold and teal are too light for white text.
+    out property <color> on-accent: accent-index == 1 || accent-index == 4 ? #14110A : #FFFFFF;
+}
