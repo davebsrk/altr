@@ -3,7 +3,7 @@
 //!
 //! `altr --snapshot out.bmp [--dark|--light] [--settings] [--account N] [--accent N]
 //!  [--confirm N] [--remove N] [--empty] [--progress TEXT] [--cancel] [--toast TEXT] [--error]
-//!  [--game valorant|league] [--fraction F] [--updating valorant|league] [--play-after] [--league-update] [--app-update V]`
+//!  [--game valorant|league] [--fraction F] [--updating valorant|league] [--play-after] [--league-update] [--app-update V] [--detail TEXT]`
 
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Platform, WindowAdapter};
@@ -78,6 +78,7 @@ impl Snapshot {
         if let Some(text) = self.value("--progress") {
             ui.set_busy(true);
             ui.set_progress(text.into());
+            ui.set_progress_detail(self.value("--detail").unwrap_or_default().into());
             ui.set_can_cancel(self.wants("--cancel"));
         }
         if let Some(text) = self.value("--toast") {

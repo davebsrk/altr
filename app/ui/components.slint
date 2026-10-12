@@ -112,24 +112,6 @@ export component Segmented inherits Rectangle {
     }
 }
 
-// Three pulsing dots: a progress indicator that works with the software renderer.
-export component Dots inherits HorizontalLayout {
-    in property <color> color: Theme.text;
-
-    alignment: center;
-    spacing: 4px;
-    for i in 3: VerticalLayout {
-        alignment: center;
-        Rectangle {
-            width: 5px;
-            height: 5px;
-            border-radius: 2.5px;
-            background: root.color;
-            opacity: 0.25 + 0.75 * abs(sin(animation-tick() / 1ms * 0.25deg - i * 60deg));
-        }
-    }
-}
-
 export component Button inherits Rectangle {
     in property <string> text;
     in property <image> icon;
@@ -138,19 +120,19 @@ export component Button inherits Rectangle {
     in property <bool> danger;
     // The main call to action: condensed caps, like a game launcher's Play button.
     in property <bool> emphasis;
+    // 30 px tall, for actions inside cards.
+    in property <bool> small;
     in property <bool> enabled: true;
-    // Shows pulsing dots instead of the icon and keeps full opacity while disabled.
-    in property <bool> loading;
     callback clicked;
 
     property <color> fill: danger ? Theme.danger : Theme.accent;
     property <color> on-fill: danger ? #FFFFFF : Theme.on-accent;
 
-    height: 40px;
-    min-width: row.preferred-width + 28px;
+    height: small ? 30px : 40px;
+    min-width: row.preferred-width + (small ? 22px : 28px);
     border-radius: 8px;
     border-width: primary ? 0 : 1px;
-    opacity: enabled || loading ? 1 : 0.5;
+    opacity: enabled ? 1 : 0.5;
     border-color: Theme.border;
     background: primary
         ? (touch.pressed ? fill.darker(0.15) : touch.has-hover ? fill.brighter(0.1) : fill)
@@ -160,10 +142,7 @@ export component Button inherits Rectangle {
     row := HorizontalLayout {
         alignment: center;
         spacing: 8px;
-        if root.loading: Dots {
-            color: root.primary ? root.on-fill : Theme.text;
-        }
-        if !root.loading && root.icon.width > 0: VerticalLayout {
+        if root.icon.width > 0: VerticalLayout {
             alignment: center;
             Image {
                 source: root.icon;
@@ -176,7 +155,7 @@ export component Button inherits Rectangle {
             text: root.emphasis ? root.text.to-uppercase() : root.text;
             color: root.primary ? root.on-fill : Theme.text;
             font-family: root.emphasis ? "Barlow Semi Condensed" : "Barlow";
-            font-size: root.emphasis ? 14px : 13px;
+            font-size: root.emphasis ? 14px : root.small ? 12px : 13px;
             font-weight: root.primary || root.emphasis ? 600 : 400;
             letter-spacing: root.emphasis ? 0.8px : 0;
             vertical-alignment: center;
@@ -184,7 +163,7 @@ export component Button inherits Rectangle {
     }
 
     touch := TouchArea {
-        enabled: root.enabled && !root.loading;
+        enabled: root.enabled;
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
@@ -375,21 +354,114 @@ export component GameTile inherits Rectangle {
     }
 }
 
-// Small text-only action, e.g. "Cancelar" next to a progress bar.
-export component TextButton inherits Rectangle {
-    in property <string> text;
-    in property <bool> accent;
-    callback clicked;
 
-    width: label.preferred-width;
-    label := Text {
-        text: root.text;
-        color: root.accent ? (touch.has-hover ? Theme.accent.brighter(0.2) : Theme.accent) : (touch.has-hover ? Theme.text : Theme.muted);
-        font-size: 12px;
-        font-weight: root.accent ? 600 : 400;
+// Rotating arc for work without a measurable end.
+export component Spinner inherits Rectangle {
+    in property <color> tint: Theme.accent;
+    property <angle> start: animation-tick() / 1ms * 0.36deg;
+    property <angle> end: start + 100deg;
+
+    width: 16px;
+    height: 16px;
+
+    Rectangle {
+        border-radius: 8px;
+        border-width: 2px;
+        border-color: root.tint.with-alpha(0.2);
     }
-    touch := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+    Path {
+        width: 16px;
+        height: 16px;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        commands: "M \{8 + 7 * sin(root.start)} \{8 - 7 * cos(root.start)} A 7 7 0 0 1 \{8 + 7 * sin(root.end)} \{8 - 7 * cos(root.end)}";
+        stroke: root.tint;
+        stroke-width: 2px;
+        fill: transparent;
+    }
+}
+
+// Status of a running action or an offer (e.g. a new version): coloured edge, title,
+// optional detail line, optional button, and a progress line along the bottom.
+export component StatusCard inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    in property <color> tone: Theme.accent;
+    in property <bool> spinning;
+    in property <image> icon;
+    // 0–1 draws the progress line; negative hides it.
+    in property <float> progress: -1;
+    in property <string> action;
+    in property <bool> action-primary;
+    callback act();
+
+    height: 46px;
+    border-radius: 8px;
+    background: Theme.card;
+    border-width: 1px;
+    border-color: Theme.border;
+    clip: true;
+
+    Rectangle {
+        x: 0;
+        width: 3px;
+        background: root.tone;
+    }
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 8px;
+        spacing: 10px;
+
+        VerticalLayout {
+            alignment: center;
+            if root.spinning: Spinner {
+                tint: root.tone;
+            }
+            if !root.spinning && root.icon.width > 0: Image {
+                source: root.icon;
+                colorize: root.tone;
+                width: 16px;
+                height: 16px;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 1px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: 12.5px;
+                font-weight: 600;
+                overflow: elide;
+            }
+            if root.detail != "": Text {
+                text: root.detail;
+                color: Theme.muted;
+                font-size: 11px;
+                overflow: elide;
+            }
+        }
+
+        if root.action != "": VerticalLayout {
+            alignment: center;
+            Button {
+                small: true;
+                primary: root.action-primary;
+                text: root.action;
+                clicked => { root.act(); }
+            }
+        }
+    }
+
+    if root.progress >= 0: Rectangle {
+        x: 0;
+        y: parent.height - 3px;
+        height: 3px;
+        width: parent.width * min(root.progress, 1);
+        background: root.tone;
+        animate width { duration: 400ms; }
     }
 }

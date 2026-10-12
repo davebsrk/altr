@@ -215,6 +215,7 @@ impl Actions {
         self.play_after.store(false, Ordering::Relaxed);
         ui.set_can_cancel(cancellable);
         ui.set_progress("".into());
+        ui.set_progress_detail("".into());
         ui.set_toast_visible(false);
         self.cancel.store(false, Ordering::Relaxed);
 
@@ -224,7 +225,10 @@ impl Actions {
             let progress = |msg: &str, fraction: Option<f32>| {
                 let msg = msg.to_owned();
                 let _ = ui.upgrade_in_event_loop(move |ui| {
-                    ui.set_progress(msg.into());
+                    // "Title\nDetail": the detail is the progress card's second line.
+                    let (title, detail) = msg.split_once('\n').unwrap_or((&msg, ""));
+                    ui.set_progress(title.into());
+                    ui.set_progress_detail(detail.into());
                     ui.set_progress_fraction(fraction.unwrap_or(-1.0));
                     // Measurable steps (updates) can always be cancelled, even inside "Jugar".
                     if fraction.is_some() {
@@ -240,6 +244,7 @@ impl Actions {
                 ui.set_updating(false);
                 ui.set_can_cancel(false);
                 ui.set_progress("".into());
+                ui.set_progress_detail("".into());
                 ui.set_progress_fraction(-1.0);
                 if focus {
                     ui.window().with_winit_window(|w| w.focus_window());

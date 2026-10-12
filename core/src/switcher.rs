@@ -107,7 +107,7 @@ pub fn switch_to(store: &mut Store, target: &str, progress: Progress) -> Result<
     store.activate(target);
     save(store)?;
 
-    progress(&format!("Conectando con {}…", account.riot_id()), None);
+    progress(&format!("Conectando con {}…\nReiniciando el Riot Client en segundo plano", account.riot_id()), None);
     opened(riot::launch_hidden())?;
     match riot::wait_for_login(Duration::from_secs(45), &AtomicBool::new(false)) {
         ClientState::LoggedIn(me) if me.puuid == target => {
@@ -208,7 +208,7 @@ pub fn update(game: Game, progress: Progress, cancel: &AtomicBool) -> Result<Str
                 last = Some((downloaded, now));
                 let mut text = format!("Actualizando {name} · {percent:.0} %");
                 if total > 0 {
-                    text += &format!(" · {} de {}", size(downloaded), size(total));
+                    text += &format!("\n{} de {}", size(downloaded), size(total));
                     if speed > 0.0 {
                         text += &format!(" · {}/s", size(speed as u64));
                     }
@@ -254,7 +254,7 @@ pub fn add_account(store: &mut Store, progress: Progress, cancel: &AtomicBool) -
     save(store)?;
 
     opened(riot::show_client())?;
-    progress("Inicia sesión en la ventana de Riot y marca «Mantener sesión iniciada»", None);
+    progress("Esperando inicio de sesión\nMarca «Mantener sesión iniciada» en la ventana de Riot", None);
     match riot::wait_for_login(Duration::from_secs(300), cancel) {
         ClientState::LoggedIn(me) => {
             progress("Guardando la sesión…", None);
