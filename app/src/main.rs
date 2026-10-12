@@ -314,6 +314,14 @@ fn main() -> Result<(), slint::PlatformError> {
     #[cfg(not(debug_assertions))]
     let store = Store::load();
 
+    #[cfg(debug_assertions)]
+    let headless = snapshot.is_some();
+    #[cfg(not(debug_assertions))]
+    let headless = false;
+    if !headless && !altr_core::single_instance() {
+        return Ok(());
+    }
+
     let config = Rc::new(RefCell::new(Config::load()));
     let ui = AppWindow::new()?;
     ui.set_version(env!("CARGO_PKG_VERSION").into());
