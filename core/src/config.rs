@@ -31,11 +31,13 @@ pub struct Config {
     pub confirm_switch: bool,
     /// Closing the window keeps ALTR running in the system tray.
     pub tray: bool,
+    /// Start ALTR (hidden in the tray) when the user signs in to Windows.
+    pub autostart: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { theme: ThemeMode::default(), accent: 0, default_game: Game::default(), confirm_switch: true, tray: true }
+        Self { theme: ThemeMode::default(), accent: 0, default_game: Game::default(), confirm_switch: true, tray: true, autostart: false }
     }
 }
 
@@ -77,7 +79,7 @@ mod tests {
 
         assert_eq!(Config::load_from(&path), Config::default());
 
-        let config = Config { theme: ThemeMode::Dark, accent: 3, default_game: Game::League, confirm_switch: false, tray: false };
+        let config = Config { theme: ThemeMode::Dark, accent: 3, default_game: Game::League, confirm_switch: false, tray: false, autostart: true };
         config.save_to(&path).unwrap();
         assert_eq!(Config::load_from(&path), config);
 

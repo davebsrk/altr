@@ -180,6 +180,8 @@ export component AppWindow inherits Window {
 
     // Closing the window keeps ALTR in the system tray.
     in-out property <bool> tray-enabled: true;
+    // ALTR starts with Windows (hidden in the tray when that is enabled).
+    in-out property <bool> autostart;
     // Account being renamed in the dialog, -1 when closed.
     in-out property <int> renaming: -1;
     // Sidebar drag: the account being dragged and where it would land (-1 when not dragging).
@@ -483,135 +485,157 @@ export component AppWindow inherits Window {
             Panel {
                 shown: root.settings-open;
 
-                VerticalLayout {
-                    padding: 24px;
-                    // Fits the 400 px minimum height.
-                    spacing: 14px;
+                // Scrolls with the wheel when the window is shorter than the settings.
+                settings-scroll := Flickable {
+                    content-height: max(self.height, settings-list.preferred-height);
 
-                    Text {
-                        text: "Ajustes";
-                        color: Theme.text;
-                        font-size: 22px;
-                        font-weight: 600;
-                    }
+                    settings-list := VerticalLayout {
+                        width: settings-scroll.width;
+                        height: settings-scroll.content-height;
+                        padding: 24px;
+                        spacing: 14px;
 
-                    VerticalLayout {
-                        spacing: 8px;
-                        Label { text: "Tema"; }
-                        // A fixed-width child would cap the layout's max width and shrink the window.
-                        Rectangle {
-                            height: 32px;
-                            Segmented {
-                                x: 0;
-                                width: 300px;
-                                items: ["Sistema", "Claro", "Oscuro"];
-                                current: Theme.mode == ThemeMode.system ? 0 : Theme.mode == ThemeMode.light ? 1 : 2;
-                                changed(i) => {
-                                    Theme.mode = i == 0 ? ThemeMode.system : i == 1 ? ThemeMode.light : ThemeMode.dark;
-                                    root.settings-changed();
+                        Text {
+                            text: "Ajustes";
+                            color: Theme.text;
+                            font-size: 22px;
+                            font-weight: 600;
+                        }
+
+                        VerticalLayout {
+                            spacing: 8px;
+                            Label { text: "Tema"; }
+                            // A fixed-width child would cap the layout's max width and shrink the window.
+                            Rectangle {
+                                height: 32px;
+                                Segmented {
+                                    x: 0;
+                                    width: 300px;
+                                    items: ["Sistema", "Claro", "Oscuro"];
+                                    current: Theme.mode == ThemeMode.system ? 0 : Theme.mode == ThemeMode.light ? 1 : 2;
+                                    changed(i) => {
+                                        Theme.mode = i == 0 ? ThemeMode.system : i == 1 ? ThemeMode.light : ThemeMode.dark;
+                                        root.settings-changed();
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    VerticalLayout {
-                        spacing: 8px;
-                        Label { text: "Color de acento"; }
-                        HorizontalLayout {
-                            padding-top: 4px;
-                            spacing: 6px;
-                            for c[i] in Theme.accents: VerticalLayout {
-                                width: 56px;
-                                spacing: 8px;
-                                HorizontalLayout {
-                                    alignment: center;
-                                    Swatch {
-                                        swatch: c;
-                                        selected: i == Theme.accent-index;
-                                        clicked => {
-                                            Theme.accent-index = i;
-                                            root.settings-changed();
+                        VerticalLayout {
+                            spacing: 8px;
+                            Label { text: "Color de acento"; }
+                            HorizontalLayout {
+                                padding-top: 4px;
+                                spacing: 6px;
+                                for c[i] in Theme.accents: VerticalLayout {
+                                    width: 56px;
+                                    spacing: 8px;
+                                    HorizontalLayout {
+                                        alignment: center;
+                                        Swatch {
+                                            swatch: c;
+                                            selected: i == Theme.accent-index;
+                                            clicked => {
+                                                Theme.accent-index = i;
+                                                root.settings-changed();
+                                            }
                                         }
+                                    }
+                                    Text {
+                                        text: Theme.accent-names[i];
+                                        color: i == Theme.accent-index ? Theme.text : Theme.muted;
+                                        font-size: 11px;
+                                        horizontal-alignment: center;
+                                    }
+                                }
+                                // Unbounded filler so the fixed-width columns don't cap the window width.
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 8px;
+                            Label { text: "Juego por defecto"; }
+                            Rectangle {
+                                height: 32px;
+                                Segmented {
+                                    x: 0;
+                                    width: 300px;
+                                    items: ["Valorant", "League of Legends"];
+                                    current: root.default-game == GameKind.valorant ? 0 : 1;
+                                    changed(i) => {
+                                        root.default-game = i == 0 ? GameKind.valorant : GameKind.league;
+                                        root.settings-changed();
+                                    }
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 10px;
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 10px;
+                                Toggle {
+                                    checked: root.confirm-switch;
+                                    toggled => {
+                                        root.confirm-switch = !root.confirm-switch;
+                                        root.settings-changed();
                                     }
                                 }
                                 Text {
-                                    text: Theme.accent-names[i];
-                                    color: i == Theme.accent-index ? Theme.text : Theme.muted;
-                                    font-size: 11px;
-                                    horizontal-alignment: center;
+                                    text: "Pedir confirmación antes de cambiar de cuenta";
+                                    color: Theme.text;
+                                    vertical-alignment: center;
                                 }
                             }
-                            // Unbounded filler so the fixed-width columns don't cap the window width.
-                            Rectangle { horizontal-stretch: 1; }
-                        }
-                    }
-
-                    VerticalLayout {
-                        spacing: 8px;
-                        Label { text: "Juego por defecto"; }
-                        Rectangle {
-                            height: 32px;
-                            Segmented {
-                                x: 0;
-                                width: 300px;
-                                items: ["Valorant", "League of Legends"];
-                                current: root.default-game == GameKind.valorant ? 0 : 1;
-                                changed(i) => {
-                                    root.default-game = i == 0 ? GameKind.valorant : GameKind.league;
-                                    root.settings-changed();
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 10px;
+                                Toggle {
+                                    checked: root.tray-enabled;
+                                    toggled => {
+                                        root.tray-enabled = !root.tray-enabled;
+                                        root.settings-changed();
+                                    }
+                                }
+                                Text {
+                                    text: "Al cerrar la ventana, seguir en la bandeja del sistema";
+                                    color: Theme.text;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 10px;
+                                Toggle {
+                                    checked: root.autostart;
+                                    toggled => {
+                                        root.autostart = !root.autostart;
+                                        root.settings-changed();
+                                    }
+                                }
+                                Text {
+                                    text: root.tray-enabled ? "Abrir ALTR al iniciar Windows, en la bandeja" : "Abrir ALTR al iniciar Windows";
+                                    color: Theme.text;
+                                    vertical-alignment: center;
                                 }
                             }
                         }
-                    }
 
-                    VerticalLayout {
-                        spacing: 10px;
+                        Rectangle { vertical-stretch: 1; }
+
                         HorizontalLayout {
-                            alignment: start;
-                            spacing: 10px;
-                            Toggle {
-                                checked: root.confirm-switch;
-                                toggled => {
-                                    root.confirm-switch = !root.confirm-switch;
-                                    root.settings-changed();
-                                }
+                            spacing: 12px;
+                            Label {
+                                text: "Ctrl+1…9 cambia de cuenta · Intro juega · Esc cierra Ajustes";
+                                font-size: 11px;
+                                horizontal-stretch: 1;
                             }
-                            Text {
-                                text: "Pedir confirmación antes de cambiar de cuenta";
-                                color: Theme.text;
-                                vertical-alignment: center;
+                            Label {
+                                text: "ALTR " + root.version;
+                                font-size: 11px;
                             }
-                        }
-                        HorizontalLayout {
-                            alignment: start;
-                            spacing: 10px;
-                            Toggle {
-                                checked: root.tray-enabled;
-                                toggled => {
-                                    root.tray-enabled = !root.tray-enabled;
-                                    root.settings-changed();
-                                }
-                            }
-                            Text {
-                                text: "Al cerrar la ventana, seguir en la bandeja del sistema";
-                                color: Theme.text;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-
-                    Rectangle { vertical-stretch: 1; }
-
-                    HorizontalLayout {
-                        spacing: 12px;
-                        Label {
-                            text: "Ctrl+1…9 cambia de cuenta · Intro juega · Esc cierra Ajustes";
-                            font-size: 11px;
-                            horizontal-stretch: 1;
-                        }
-                        Label {
-                            text: "ALTR " + root.version;
-                            font-size: 11px;
                         }
                     }
                 }

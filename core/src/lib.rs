@@ -70,3 +70,28 @@ pub fn show_requested() -> bool {
     // SAFETY: the handle comes from CreateEventW in `single_instance` and is never closed.
     SHOW_EVENT.get().is_some_and(|&event| unsafe { WaitForSingleObject(event as HANDLE, 0) == WAIT_OBJECT_0 })
 }
+
+/// Starts ALTR, hidden in the tray, when the user signs in to Windows: a value under the
+/// per-user Run key (no admin rights; Task Manager's "Startup apps" lists it too).
+pub fn set_autostart(enabled: bool) -> io::Result<()> {
+    use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, REG_SZ, RegDeleteKeyValueW, RegSetKeyValueW};
+    let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Run");
+    // Dev builds use their own entry so testing never replaces the installed app's.
+    let name = wide(if cfg!(debug_assertions) { "ALTR (dev)" } else { "ALTR" });
+    // SAFETY: null-terminated UTF-16 buffers that outlive the calls; the size is in bytes.
+    let status = unsafe {
+        if enabled {
+            let command = wide(&format!("\"{}\" --background", std::env::current_exe()?.display()));
+            let size = (command.len() * 2) as u32;
+            RegSetKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr(), REG_SZ, command.as_ptr().cast(), size)
+        } else {
+            match RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr()) {
+                ERROR_FILE_NOT_FOUND => 0,
+                status => status,
+            }
+        }
+    };
+    if status == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(status as i32)) }
+}

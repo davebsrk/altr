@@ -4,7 +4,7 @@
 //! `altr --snapshot out.bmp [--dark|--light] [--settings] [--account N] [--accent N]
 //!  [--confirm N] [--remove N] [--empty] [--progress TEXT] [--cancel] [--toast TEXT] [--error]
 //!  [--game valorant|league] [--fraction F] [--updating valorant|league] [--play-after] [--league-update] [--app-update V] [--detail TEXT]
-//!  [--launching] [--running valorant|league] [--alias TEXT] [--rename N] [--drag FROM TO] [--menu N] [--small]`
+//!  [--launching] [--running valorant|league] [--alias TEXT] [--rename N] [--drag FROM TO] [--menu N] [--scroll] [--small]`
 //!
 //! `--uitest` also clicks, drags and types through the UI and checks what it triggers.
 
@@ -130,6 +130,13 @@ impl Snapshot {
         ui.show().map_err(io::Error::other)?;
         if self.wants("--uitest") {
             ui_test(ui)?;
+        }
+        // One wheel turn down over the content (e.g. Ajustes at the minimum size).
+        if self.wants("--scroll") {
+            use slint::platform::WindowEvent;
+            let position = slint::LogicalPosition::new(300.0, 300.0);
+            ui.window().dispatch_event(WindowEvent::PointerMoved { position });
+            ui.window().dispatch_event(WindowEvent::PointerScrolled { position, delta_x: 0.0, delta_y: -120.0 });
         }
         // Right-clicks avatar N to open its menu.
         if let Some(i) = self.number("--menu") {

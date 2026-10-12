@@ -100,6 +100,8 @@ thread_local! {
 /// Brings the window back from the tray (or from behind other windows).
 fn show_window(ui: &AppWindow) {
     let _ = ui.show();
+    // When ALTR started hidden, the native window only exists from here on.
+    sync_title_bar(ui);
     ui.window().with_winit_window(|w| {
         w.set_minimized(false);
         w.focus_window();
@@ -303,7 +305,12 @@ impl Actions {
 
 fn main() -> Result<(), slint::PlatformError> {
     // Must run first: handles install/update/uninstall hooks from the Setup and exits if needed.
-    velopack::VelopackApp::build().run();
+    velopack::VelopackApp::build()
+        // Don't leave a startup entry pointing at a deleted program.
+        .on_before_uninstall_fast_callback(|_| {
+            let _ = altr_core::set_autostart(false);
+        })
+        .run();
 
     // Debug-only, read-only diagnostics: what the launcher sees of Riot, without touching it.
     #[cfg(debug_assertions)]
@@ -318,7 +325,7 @@ fn main() -> Result<(), slint::PlatformError> {
         return Ok(());
     }
     // Debug-only driver for live tests: runs the same switcher calls as the UI.
-    // `--do add` | `--do switch N` | `--do remove N` | `--do play|update valorant|league`
+    // `--do add` | `--do switch N` | `--do remove N` | `--do play|update valorant|league` | `--do autostart on|off`
     #[cfg(debug_assertions)]
     if let Some(pos) = std::env::args().position(|a| a == "--do") {
         let args: Vec<String> = std::env::args().skip(pos + 1).collect();
@@ -343,6 +350,8 @@ fn main() -> Result<(), slint::PlatformError> {
             Some("remove") => id(&store).ok_or("bad index".into()).and_then(|id| switcher::remove_account(&mut store, &id)),
             Some("play") => switcher::play(&mut store, if args.get(1).is_some_and(|g| g == "league") { config::Game::League } else { config::Game::Valorant }, &progress, &AtomicBool::new(false)),
             Some("update") => switcher::update(if args.get(1).is_some_and(|g| g == "league") { config::Game::League } else { config::Game::Valorant }, &progress, &AtomicBool::new(false)),
+            // `--do autostart on|off`: the "ALTR (dev)" startup entry.
+            Some("autostart") => altr_core::set_autostart(args.get(1).is_some_and(|v| v == "on")).map(|()| "ok".into()).map_err(|e| e.to_string()),
             _ => Err("unknown command".into()),
         };
         println!("{result:?}\nactive: {:?}\naccounts: {:?}", store.active, store.accounts.iter().map(|a| a.riot_id()).collect::<Vec<_>>());
@@ -381,6 +390,11 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.set_default_game(to_ui_game(c.default_game));
         ui.set_confirm_switch(c.confirm_switch);
         ui.set_tray_enabled(c.tray);
+        ui.set_autostart(c.autostart);
+        // Rewritten on every start so the entry always points at this copy of ALTR.
+        if c.autostart && !headless {
+            let _ = altr_core::set_autostart(true);
+        }
     }
     refresh(&ui, &store);
 
@@ -396,6 +410,15 @@ fn main() -> Result<(), slint::PlatformError> {
             c.default_game = from_ui_game(ui.get_default_game());
             c.confirm_switch = ui.get_confirm_switch();
             c.tray = ui.get_tray_enabled();
+            if ui.get_autostart() != c.autostart {
+                match altr_core::set_autostart(ui.get_autostart()) {
+                    Ok(()) => c.autostart = ui.get_autostart(),
+                    Err(e) => {
+                        ui.set_autostart(c.autostart);
+                        show_toast(&ui, &format!("No se pudo cambiar el inicio con Windows: {e}"), true);
+                    }
+                }
+            }
             TRAY.with_borrow(|tray| tray.as_ref().map(|t| if c.tray { t.show() } else { t.hide() }));
             sync_title_bar(&ui);
             if let Err(e) = c.save() {
@@ -645,6 +668,10 @@ fn main() -> Result<(), slint::PlatformError> {
     let weak = ui.as_weak();
     Timer::single_shot(Duration::ZERO, move || sync_title_bar(&weak.unwrap()));
 
-    ui.show()?;
+    // Started with Windows: stay in the tray until opened (without a tray there'd be no way back).
+    let background = std::env::args().any(|a| a == "--background");
+    if !(background && ui.get_tray_enabled()) {
+        ui.show()?;
+    }
     slint::run_event_loop_until_quit()
 }
