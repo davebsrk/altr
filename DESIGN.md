@@ -141,6 +141,7 @@ Todo local, sin servidores ni claves: se lee del juego abierto al arrancar el la
 - **LoL (LCU, la API local del cliente de LoL, permitida por Riot):** `lockfile` en la carpeta de LoL (de `RiotClientInstalls.json`). Nivel de `/lol-summoner/v1/current-summoner` (`summonerLevel`); solo/dúo de `/lol-ranked/v1/current-ranked-stats` → `queueMap.RANKED_SOLO_5x5` (`tier`, `division`, `leaguePoints`) → "Oro IV · 42 LP". Maestro, Gran Maestro y Retador sin división; sin rango → "Sin clasificar".
 - **Valorant:** la presencia propia en el chat del Riot Client mientras el juego está abierto: `/chat/v4/presences`, entrada con el PUUID propio (de `/chat/v1/session`) y `product: valorant`; su `private` es JSON en base64 con `playerPresenceData.competitiveTier` (3–26 = Hierro 1 … Inmortal 3, 27 = Radiante) y `accountLevel`. **El RR no se publica en local**: se muestra solo el rango ("Ascendente 1"). Obtenerlo exigiría los servidores de Riot con los tokens de la cuenta; descartado.
 - **API oficial de Riot (developer.riotgames.com):** descartada por ahora: necesita clave (la de desarrollo caduca cada 24 h; la clave no puede ir dentro de una app de escritorio) y el rango de Valorant no está disponible. Podría añadirse como extra para refrescar LoL sin abrir el juego.
+- **Historial de rango:** descartado. Solo en local se quedaría corto (solo ve los momentos en que el juego está abierto con ALTR en marcha); hacerlo completo exigiría la API oficial con un servidor propio y la aprobación de Riot. Para eso ya están op.gg o tracker.gg.
 
 **Cliente oculto y fin de partida:** cuando se cierra el juego que lanzó, un Riot Client en `--headless` cierra su sesión ("XMPP Logout… FINALIZE"), aunque el archivo de sesión sigue siendo válido. Antes de jugar o actualizar, el launcher comprueba la sesión y, si no la hay y no hay ningún juego abierto, reinicia el cliente oculto, que vuelve a entrar solo (~13 s en lugar de ~9 s). Mientras tanto la comprobación de actualizaciones no ve nada hasta la siguiente acción. Lanzar un juego tarda ~10 s en responder: las peticiones de acción esperan hasta 60 s (las de lectura, 3 s). Si tras actualizar el cliente sigue verificando/reparando, "Jugar" reintenta cada 5 s hasta 2 min.
 
@@ -193,10 +194,12 @@ altr/
 
 1. **Esqueleto:** workspace, UI de la variante C con datos falsos, temas y acentos. (Hecho.)
 2. **Núcleo:** detección de Riot, guardar y restaurar sesión, añadir y eliminar cuenta, cambio real. (Hecho y probado en real el 2026-10-12: añadir, cambio con restauración de sesión, login nuevo hasta la pantalla de login, eliminar, Jugar Valorant y bloqueo con el juego abierto. Cambio entre dos cuentas distintas probado también.)
-3. **Caché de rango:** LCU para LoL y presencia del chat para Valorant. (Hecho 2026-10-12; LoL probado en real: "Oro IV · 42 LP", nivel 109. Valorant probado con tests sobre el formato real de las presencias; falta verlo con Valorant abierto.)
+3. **Caché de rango:** LCU para LoL y presencia del chat para Valorant. (Hecho 2026-10-12; LoL probado en real: "Oro IV · 42 LP", nivel 109. Valorant también visto en real: el rango aparece, sin RR.)
 4. **Pulido:** arrastrar para reordenar, atajos de teclado, icono en la bandeja, alias y juegos por cuenta en el clic derecho, instalador. (Hecho 2026-10-12. Arrastre, atajos y menú comprobados con `--snapshot x.bmp --uitest`, que envía eventos reales de ratón y teclado a la interfaz sin ventana; bandeja comprobada en real: cerrar oculta, un segundo lanzamiento la muestra, sin bandeja cerrar sale.)
 
-Hecho fuera de fase (2026-10-12): Riot Client oculto, actualizaciones desde el launcher y "Jugar" que actualiza solo.
+Hecho fuera de fase (2026-10-12): Riot Client oculto, actualizaciones desde el launcher, "Jugar" que actualiza solo y abrir con Windows (v0.1.5).
+
+**Estado (2026-10-12):** todo lo anterior publicado en la v0.1.5 y confirmado funcionando por el usuario. Ideas sin empezar: notas por cuenta en el clic derecho.
 
 ## Marca
 
