@@ -132,6 +132,16 @@ pub fn blocking_process() -> Option<&'static str> {
         .map(|(_, game)| *game)
 }
 
+/// Whether Valorant and LoL (game or LoL client) are open, as `(valorant, league)`.
+pub fn running_games() -> (bool, bool) {
+    let running = processes();
+    let any = |names: &[&str]| running.iter().any(|(_, n)| names.iter().any(|exe| n.eq_ignore_ascii_case(exe)));
+    (
+        any(&["VALORANT.exe", "VALORANT-Win64-Shipping.exe"]),
+        any(&["League of Legends.exe", "LeagueClientUx.exe", "LeagueClient.exe"]),
+    )
+}
+
 fn client_pids() -> Vec<(u32, String)> {
     processes().into_iter().filter(|(_, n)| CLIENT.iter().any(|c| n.eq_ignore_ascii_case(c))).collect()
 }
@@ -322,7 +332,18 @@ pub enum LaunchError {
 /// shows its window.
 pub fn launch_game(product: &str) -> Result<(), LaunchError> {
     let lock = ensure_client().map_err(|e| LaunchError::Failed(e.to_string()))?;
-    match api(&lock, "POST", &format!("/product-launcher/v1/products/{product}/patchlines/live"), None) {
+    let path = format!("/product-launcher/v1/products/{product}/patchlines/live");
+    let mut answer = api(&lock, "POST", &path, None);
+    // Right after a (re)start the client can be signed in yet not accept launches for a few
+    // seconds (no answer, 404 or 5xx): retry for up to ~20 s.
+    for _ in 0..10 {
+        if !matches!(answer, None | Some((404 | 500..=599, _))) {
+            break;
+        }
+        thread::sleep(Duration::from_secs(2));
+        answer = api(&lock, "POST", &path, None);
+    }
+    match answer {
         Some((200..300, _)) => Ok(()),
         Some((424, body)) if body.contains("not_up_to_date") => Err(LaunchError::NeedsUpdate),
         Some((_, body)) => Err(LaunchError::Failed(body)),

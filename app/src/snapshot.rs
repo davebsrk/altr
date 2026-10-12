@@ -3,7 +3,8 @@
 //!
 //! `altr --snapshot out.bmp [--dark|--light] [--settings] [--account N] [--accent N]
 //!  [--confirm N] [--remove N] [--empty] [--progress TEXT] [--cancel] [--toast TEXT] [--error]
-//!  [--game valorant|league] [--fraction F] [--updating valorant|league] [--play-after] [--league-update] [--app-update V] [--detail TEXT]`
+//!  [--game valorant|league] [--fraction F] [--updating valorant|league] [--play-after] [--league-update] [--app-update V] [--detail TEXT]
+//!  [--launching] [--running valorant|league]`
 
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Platform, WindowAdapter};
@@ -98,6 +99,9 @@ impl Snapshot {
             ui.set_updating_game(if league("--updating") { GameKind::League } else { GameKind::Valorant });
         }
         ui.set_play_after(self.wants("--play-after"));
+        ui.set_launching(self.wants("--launching"));
+        ui.set_valorant_running(self.value("--running") == Some("valorant"));
+        ui.set_league_running(self.value("--running") == Some("league"));
         if let Some(version) = self.value("--app-update") {
             ui.set_app_update(version.into());
         }

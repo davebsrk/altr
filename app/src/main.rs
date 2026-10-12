@@ -118,6 +118,9 @@ fn refresh(ui: &AppWindow, store: &Store) {
 
 /// Shows a result toast that hides itself after a few seconds (errors stay longer).
 fn show_toast(ui: &AppWindow, text: &str, error: bool) {
+    if text.is_empty() {
+        return;
+    }
     ui.set_toast_text(text.into());
     ui.set_toast_error(error);
     ui.set_toast_visible(true);
@@ -242,6 +245,7 @@ impl Actions {
                 refresh(&ui, &work);
                 ui.set_busy(false);
                 ui.set_updating(false);
+                ui.set_launching(false);
                 ui.set_can_cancel(false);
                 ui.set_progress("".into());
                 ui.set_progress_detail("".into());
@@ -393,6 +397,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 ui.set_updating(true);
                 ui.set_updating_game(kind);
                 ui.set_play_after(true);
+                ui.set_launching(true);
             }
         }
     });
@@ -487,6 +492,20 @@ fn main() -> Result<(), slint::PlatformError> {
     rank_timer.start(slint::TimerMode::Repeated, Duration::from_secs(60), {
         let actions = actions.clone();
         move || check_ranks(&actions)
+    });
+    // Which games are open: the Play button turns into "ABIERTO" for an open game.
+    let (valorant, league) = riot::running_games();
+    ui.set_valorant_running(valorant);
+    ui.set_league_running(league);
+    let running_timer = Timer::default();
+    running_timer.start(slint::TimerMode::Repeated, Duration::from_secs(2), {
+        let ui = ui.as_weak();
+        move || {
+            let (valorant, league) = riot::running_games();
+            let ui = ui.unwrap();
+            ui.set_valorant_running(valorant);
+            ui.set_league_running(league);
+        }
     });
     // New patches come out while the launcher is open.
     let update_timer = Timer::default();

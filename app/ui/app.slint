@@ -80,6 +80,11 @@ export component AppWindow inherits Window {
     in property <GameKind> updating-game;
     // The game opens by itself when the running update finishes.
     in property <bool> play-after;
+    // The running action is "Jugar": opening a game shows as a spinner in the button.
+    in property <bool> launching;
+    // Games that are open right now (checked every 2 s).
+    in property <bool> valorant-running;
+    in property <bool> league-running;
     // A game update is waiting.
     in property <bool> valorant-update;
     in property <bool> league-update;
@@ -146,6 +151,11 @@ export component AppWindow inherits Window {
     property <bool> needs-update: is-valorant ? valorant-update : league-update;
     // The selected game is the one being updated right now.
     property <bool> selected-updating: busy && updating && updating-game == game && progress-fraction >= 0;
+    // Opening a game (not updating it first): shown inside the Play button.
+    property <bool> opening: busy && launching && progress-fraction < 0;
+    // A running action the status card should show.
+    property <bool> task-card: busy && progress != "" && !opening;
+    property <bool> game-running: is-valorant ? valorant-running : league-running;
 
     // Ring progress for a game tile: shown only while that game updates and isn't selected.
     pure function ring(g: GameKind) -> float {
@@ -593,8 +603,8 @@ export component AppWindow inherits Window {
                     HorizontalLayout {
                         spacing: 16px;
 
-                        // The running action, whatever game it concerns.
-                        if root.busy && root.progress != "": StatusCard {
+                        // The running action, whatever game it concerns. Opening a game shows in the button instead.
+                        if root.task-card: StatusCard {
                             horizontal-stretch: 1;
                             title: root.progress;
                             detail: root.progress-detail;
@@ -620,27 +630,32 @@ export component AppWindow inherits Window {
                             action-primary: true;
                             act => { root.install-app-update(); }
                         }
-                        if !root.busy && !root.needs-update && root.app-update == "": Rectangle {
+                        if !root.task-card && (root.busy || (!root.needs-update && root.app-update == "")): Rectangle {
                             horizontal-stretch: 1;
                         }
 
-                        // Hidden while an action runs, except to queue "play" during the selected game's update.
-                        if !root.busy || root.selected-updating: Rectangle {
+                        // Hidden while another action runs; stays to show "opening" and to queue
+                        // "play" during the selected game's update.
+                        if !root.busy || root.selected-updating || root.opening: Rectangle {
                             width: 190px;
                             height: 40px;
                             opacity: root.fading ? 0 : 1;
                             animate opacity { duration: 150ms; }
                             Button {
                                 width: parent.width;
-                                primary: !root.selected-updating;
+                                primary: !root.selected-updating && !(root.game-running && !root.busy);
                                 emphasis: true;
+                                loading: root.opening;
                                 icon: root.selected-updating
                                     ? (root.play-after ? @image-url("icons/check.svg") : @image-url("icons/clock.svg"))
+                                    : root.game-running ? @image-url("icons/check.svg")
                                     : root.needs-update ? @image-url("icons/download.svg") : @image-url("icons/play.svg");
-                                // While its own update runs the button stays usable to queue "play".
-                                enabled: root.selected-updating || !root.busy;
-                                text: root.selected-updating
-                                    ? (root.play-after ? "Se abrirá al terminar" : "Jugar al terminar")
+                                // While its own update runs the button stays usable to queue "play";
+                                // a game that is already open can't be started twice.
+                                enabled: root.selected-updating || (!root.busy && !root.game-running);
+                                text: root.opening ? "Abriendo…"
+                                    : root.selected-updating ? (root.play-after ? "Se abrirá al terminar" : "Jugar al terminar")
+                                    : root.game-running ? "Abierto"
                                     : root.needs-update ? "Actualizar" : "Jugar";
                                 clicked => {
                                     if (root.selected-updating) {

@@ -170,7 +170,20 @@ pub fn play(store: &mut Store, game: Game, progress: Progress, cancel: &AtomicBo
     }
     store.activate(&id);
     save(store)?;
-    Ok(format!("Abriendo {name}…"))
+    // Keep "opening" on screen until the game's process shows up (or 90 s pass).
+    let is_open = || match game {
+        Game::Valorant => riot::running_games().0,
+        Game::League => riot::running_games().1,
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
+    while !is_open() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    if !is_open() {
+        return Err(format!("{name} no llegó a abrirse. Vuelve a intentarlo."));
+    }
+    // Success speaks for itself: the button turns into "ABIERTO". No toast.
+    Ok(String::new())
 }
 
 /// Updates a game through the hidden client, reporting the percentage until it is done.

@@ -112,6 +112,32 @@ export component Segmented inherits Rectangle {
     }
 }
 
+// Rotating arc for work without a measurable end.
+export component Spinner inherits Rectangle {
+    in property <color> tint: Theme.accent;
+    property <angle> start: animation-tick() / 1ms * 0.36deg;
+    property <angle> end: start + 100deg;
+
+    width: 16px;
+    height: 16px;
+
+    Rectangle {
+        border-radius: 8px;
+        border-width: 2px;
+        border-color: root.tint.with-alpha(0.2);
+    }
+    Path {
+        width: 16px;
+        height: 16px;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        commands: "M \{8 + 7 * sin(root.start)} \{8 - 7 * cos(root.start)} A 7 7 0 0 1 \{8 + 7 * sin(root.end)} \{8 - 7 * cos(root.end)}";
+        stroke: root.tint;
+        stroke-width: 2px;
+        fill: transparent;
+    }
+}
+
 export component Button inherits Rectangle {
     in property <string> text;
     in property <image> icon;
@@ -122,6 +148,8 @@ export component Button inherits Rectangle {
     in property <bool> emphasis;
     // 30 px tall, for actions inside cards.
     in property <bool> small;
+    // Spinner instead of the icon, full opacity and no clicks: the action is under way.
+    in property <bool> loading;
     in property <bool> enabled: true;
     callback clicked;
 
@@ -132,7 +160,7 @@ export component Button inherits Rectangle {
     min-width: row.preferred-width + (small ? 22px : 28px);
     border-radius: 8px;
     border-width: primary ? 0 : 1px;
-    opacity: enabled ? 1 : 0.5;
+    opacity: enabled || loading ? 1 : 0.5;
     border-color: Theme.border;
     background: primary
         ? (touch.pressed ? fill.darker(0.15) : touch.has-hover ? fill.brighter(0.1) : fill)
@@ -142,7 +170,13 @@ export component Button inherits Rectangle {
     row := HorizontalLayout {
         alignment: center;
         spacing: 8px;
-        if root.icon.width > 0: VerticalLayout {
+        if root.loading: VerticalLayout {
+            alignment: center;
+            Spinner {
+                tint: root.primary ? root.on-fill : Theme.accent;
+            }
+        }
+        if !root.loading && root.icon.width > 0: VerticalLayout {
             alignment: center;
             Image {
                 source: root.icon;
@@ -163,7 +197,7 @@ export component Button inherits Rectangle {
     }
 
     touch := TouchArea {
-        enabled: root.enabled;
+        enabled: root.enabled && !root.loading;
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
@@ -354,32 +388,6 @@ export component GameTile inherits Rectangle {
     }
 }
 
-
-// Rotating arc for work without a measurable end.
-export component Spinner inherits Rectangle {
-    in property <color> tint: Theme.accent;
-    property <angle> start: animation-tick() / 1ms * 0.36deg;
-    property <angle> end: start + 100deg;
-
-    width: 16px;
-    height: 16px;
-
-    Rectangle {
-        border-radius: 8px;
-        border-width: 2px;
-        border-color: root.tint.with-alpha(0.2);
-    }
-    Path {
-        width: 16px;
-        height: 16px;
-        viewbox-width: 16;
-        viewbox-height: 16;
-        commands: "M \{8 + 7 * sin(root.start)} \{8 - 7 * cos(root.start)} A 7 7 0 0 1 \{8 + 7 * sin(root.end)} \{8 - 7 * cos(root.end)}";
-        stroke: root.tint;
-        stroke-width: 2px;
-        fill: transparent;
-    }
-}
 
 // Status of a running action or an offer (e.g. a new version): coloured edge, title,
 // optional detail line, optional button, and a progress line along the bottom.
