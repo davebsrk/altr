@@ -15,7 +15,9 @@ ALTR se actualiza solo: cuando haya una versión nueva verás "ALTR x.y.z dispon
 ## Cómo se usa
 
 - **+** añade una cuenta: se abre la ventana de Riot, inicias sesión una vez marcando **«Mantener sesión iniciada»** y ALTR la guarda.
-- **Clic en una cuenta** para cambiar a ella (con confirmación). **Clic derecho** para eliminarla.
+- **Clic en una cuenta** para cambiar a ella (con confirmación). **Arrástrala** para reordenar. **Clic derecho** para ponerle un nombre, elegir a qué juegos juega o eliminarla.
+- **Atajos:** Ctrl+1…9 cambia de cuenta, Intro juega, Esc cierra Ajustes.
+- Al cerrar la ventana, ALTR sigue en la **bandeja del sistema** (desactivable en Ajustes); desde su menú puedes cambiar de cuenta o abrir un juego.
 - **JUGAR** abre Valorant o LoL con la cuenta activa; si el juego necesita actualizarse, ALTR lo actualiza primero.
 - El rango y el nivel se guardan mientras juegas y se muestran aunque el juego esté cerrado.
 

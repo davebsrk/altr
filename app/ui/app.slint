@@ -30,11 +30,88 @@ export struct AccountView {
     // "hace 3 h"; empty when never used.
     last-used: string,
     active: bool,
+    // Name chosen by the user (empty when none); `name`/`tag` are then shown smaller.
+    alias: string,
 }
 
 component Label inherits Text {
     color: Theme.muted;
     font-size: 12px;
+}
+
+// A row of the account menu.
+component AccountMenuRow inherits Rectangle {
+    in property <image> icon;
+    // Game logos keep their own colours; line icons take the row's colour.
+    in property <bool> tint-icon: true;
+    in property <string> text;
+    in property <color> tone: Theme.text;
+    // Shows a checkbox at the end of the row.
+    in property <bool> checkable;
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    callback clicked;
+
+    height: 32px;
+    border-radius: 7px;
+    background: touch.has-hover && enabled ? (tone == Theme.danger ? Theme.danger.with-alpha(0.12) : Theme.hover) : transparent;
+    opacity: enabled ? 1 : 0.5;
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon;
+                colorize: root.tint-icon ? root.tone : transparent;
+                width: 16px;
+                height: 16px;
+            }
+        }
+        Text {
+            text: root.text;
+            color: root.tone;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        if root.checkable: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 16px;
+                height: 16px;
+                border-radius: 4px;
+                border-width: root.checked ? 0 : 1px;
+                border-color: Theme.muted;
+                background: root.checked ? Theme.accent : transparent;
+                if root.checked: Image {
+                    source: @image-url("icons/check.svg");
+                    colorize: Theme.on-accent;
+                    width: 12px;
+                    height: 12px;
+                }
+            }
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+}
+
+component AccountMenuGap inherits Rectangle {
+    height: 9px;
+    Rectangle {
+        y: 4px;
+        height: 1px;
+        background: Theme.border;
+    }
 }
 
 // One of the stacked content panels; fades and slides a little when it shows or hides.
@@ -101,18 +178,51 @@ export component AppWindow inherits Window {
     // The dialog asks to remove `pending` instead of switching to it.
     in-out property <bool> pending-remove;
 
+    // Closing the window keeps ALTR in the system tray.
+    in-out property <bool> tray-enabled: true;
+    // Account being renamed in the dialog, -1 when closed.
+    in-out property <int> renaming: -1;
+    // Sidebar drag: the account being dragged and where it would land (-1 when not dragging).
+    in-out property <int> drag-from: -1;
+    in-out property <int> drag-to: -1;
+    // How far the dragged avatar has moved from its slot.
+    property <length> drag-dy;
+
     callback play(GameKind);
     callback update(GameKind);
     callback queue-play();
     callback switch-account(int);
     callback remove-account(int);
+    callback rename-account(int, string);
+    callback set-plays(int, GameKind, bool);
+    callback move-account(int, int);
     callback add-account();
     callback cancel();
     callback install-app-update();
     callback settings-changed();
 
-    function request-switch(i: int) {
-        if (busy) {
+    // What the big button (and Enter) does right now.
+    public function main-action() {
+        if (selected-updating) {
+            queue-play();
+        } else if (busy || game-running || accounts.length == 0) {
+            return;
+        } else if (needs-update) {
+            update(game);
+        } else {
+            play(game);
+        }
+    }
+
+    // Closes any dialog and gives the keyboard back to the shortcuts.
+    function close-dialogs() {
+        pending = -1;
+        renaming = -1;
+        keys.focus();
+    }
+
+    public function request-switch(i: int) {
+        if (busy || i < 0 || i >= accounts.length) {
             return;
         }
         settings-open = false;
@@ -142,7 +252,7 @@ export component AppWindow inherits Window {
             select(pending);
             switch-account(pending);
         }
-        pending = -1;
+        close-dialogs();
     }
 
     property <AccountView> current: accounts[selected];
@@ -190,6 +300,25 @@ export component AppWindow inherits Window {
 
     animate background { duration: 150ms; }
 
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.modifiers.control && !event.modifiers.alt && event.text.character-count == 1 && event.text.is-float() && event.text != "0") {
+                root.request-switch(event.text.to-float() - 1);
+                return accept;
+            }
+            if (event.text == Key.Return && !root.settings-open) {
+                root.main-action();
+                return accept;
+            }
+            if (event.text == Key.Escape && root.settings-open) {
+                root.settings-open = false;
+                return accept;
+            }
+            reject
+        }
+    }
+
     HorizontalLayout {
         Rectangle {
             width: 68px;
@@ -211,9 +340,20 @@ export component AppWindow inherits Window {
                 border-radius: 15px;
                 border-width: 2px;
                 border-color: Theme.accent;
-                opacity: root.settings-open || root.accounts.length == 0 ? 0 : 1;
+                opacity: root.settings-open || root.accounts.length == 0 || root.drag-from >= 0 ? 0 : 1;
                 animate y { duration: 220ms; easing: ease-out; }
                 animate opacity { duration: 150ms; }
+            }
+
+            // Where the dragged account will land.
+            if root.drag-from >= 0: Rectangle {
+                x: 10px;
+                y: 14px + root.drag-to * 56px;
+                width: 48px;
+                height: 48px;
+                border-radius: 15px;
+                background: Theme.accent.with-alpha(0.18);
+                animate y { duration: 150ms; easing: ease-out; }
             }
 
             VerticalLayout {
@@ -224,23 +364,51 @@ export component AppWindow inherits Window {
                 for acc[i] in root.accounts: Rectangle {
                     width: 40px;
                     height: 40px;
+                    // The dragged avatar is drawn above the others.
+                    z: i == root.drag-from ? 1 : 0;
 
-                    Avatar {
-                        initials: acc.initials;
-                        badge: acc.has-valorant && acc.has-league ? "V·L" : acc.has-valorant ? "V" : "L";
-                        selected: i == root.selected && !root.settings-open;
-                        clicked => { root.request-switch(i); }
-                        context-menu => {
-                            if (!root.busy) {
-                                menu.show();
+                    // Avatars between the dragged one and its target make room for it.
+                    Rectangle {
+                        y: root.drag-from < 0 || i == root.drag-from ? 0
+                            : root.drag-from < i && i <= root.drag-to ? -56px
+                            : root.drag-to <= i && i < root.drag-from ? 56px : 0;
+                        animate y { duration: 150ms; easing: ease-out; }
+
+                        Avatar {
+                            y: i == root.drag-from ? root.drag-dy : 0;
+                            opacity: i == root.drag-from ? 0.85 : 1;
+                            initials: acc.initials;
+                            badge: acc.has-valorant && acc.has-league ? "V·L" : acc.has-valorant ? "V" : "L";
+                            selected: i == root.selected && !root.settings-open;
+                            clicked => { root.request-switch(i); }
+                            context-menu => {
+                                if (!root.busy) {
+                                    menu.show();
+                                }
+                            }
+                            drag-moved(d) => {
+                                if (root.busy || root.accounts.length < 2) {
+                                    return;
+                                }
+                                root.drag-from = i;
+                                root.drag-dy += d;
+                                root.drag-to = max(0, min(root.accounts.length - 1, i + round(root.drag-dy / 56px)));
+                            }
+                            drag-ended => {
+                                if (root.drag-from == i && root.drag-to != i) {
+                                    root.move-account(i, root.drag-to);
+                                }
+                                root.drag-from = -1;
+                                root.drag-to = -1;
+                                root.drag-dy = 0;
                             }
                         }
                     }
 
                     menu := PopupWindow {
                         x: 48px;
-                        width: 176px;
-                        height: 44px;
+                        width: 208px;
+                        height: items.preferred-height;
 
                         Rectangle {
                             property <bool> shown;
@@ -252,35 +420,38 @@ export component AppWindow inherits Window {
                             border-width: 1px;
                             border-color: Theme.border;
 
-                            Rectangle {
-                                x: 4px;
-                                y: 4px;
-                                width: parent.width - 8px;
-                                height: parent.height - 8px;
-                                border-radius: 7px;
-                                background: item.has-hover ? Theme.danger.with-alpha(0.12) : transparent;
-
-                                HorizontalLayout {
-                                    padding-left: 10px;
-                                    spacing: 10px;
-                                    VerticalLayout {
-                                        alignment: center;
-                                        Image {
-                                            source: @image-url("icons/trash.svg");
-                                            colorize: Theme.danger;
-                                            width: 16px;
-                                            height: 16px;
-                                        }
-                                    }
-                                    Text {
-                                        text: "Eliminar cuenta";
-                                        color: Theme.danger;
-                                        vertical-alignment: center;
-                                    }
+                            items := VerticalLayout {
+                                padding: 4px;
+                                AccountMenuRow {
+                                    icon: @image-url("icons/pencil.svg");
+                                    text: "Cambiar nombre";
+                                    clicked => { root.renaming = i; }
                                 }
-
-                                item := TouchArea {
-                                    mouse-cursor: pointer;
+                                AccountMenuGap { }
+                                // A saved account plays at least one game: the last one can't be unticked.
+                                AccountMenuRow {
+                                    icon: root.valorant-icon;
+                                    tint-icon: false;
+                                    text: "Valorant";
+                                    checkable: true;
+                                    checked: acc.has-valorant;
+                                    enabled: !acc.has-valorant || acc.has-league;
+                                    clicked => { root.set-plays(i, GameKind.valorant, !acc.has-valorant); }
+                                }
+                                AccountMenuRow {
+                                    icon: root.league-icon;
+                                    tint-icon: false;
+                                    text: "League of Legends";
+                                    checkable: true;
+                                    checked: acc.has-league;
+                                    enabled: !acc.has-league || acc.has-valorant;
+                                    clicked => { root.set-plays(i, GameKind.league, !acc.has-league); }
+                                }
+                                AccountMenuGap { }
+                                AccountMenuRow {
+                                    icon: @image-url("icons/trash.svg");
+                                    text: "Eliminar cuenta";
+                                    tone: Theme.danger;
                                     clicked => { root.request-remove(i); }
                                 }
                             }
@@ -314,7 +485,8 @@ export component AppWindow inherits Window {
 
                 VerticalLayout {
                     padding: 24px;
-                    spacing: 20px;
+                    // Fits the 400 px minimum height.
+                    spacing: 14px;
 
                     Text {
                         text: "Ajustes";
@@ -393,8 +565,7 @@ export component AppWindow inherits Window {
                     }
 
                     VerticalLayout {
-                        spacing: 8px;
-                        Label { text: "Cambio de cuenta"; }
+                        spacing: 10px;
                         HorizontalLayout {
                             alignment: start;
                             spacing: 10px;
@@ -406,7 +577,23 @@ export component AppWindow inherits Window {
                                 }
                             }
                             Text {
-                                text: "Pedir confirmación antes de cambiar";
+                                text: "Pedir confirmación antes de cambiar de cuenta";
+                                color: Theme.text;
+                                vertical-alignment: center;
+                            }
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 10px;
+                            Toggle {
+                                checked: root.tray-enabled;
+                                toggled => {
+                                    root.tray-enabled = !root.tray-enabled;
+                                    root.settings-changed();
+                                }
+                            }
+                            Text {
+                                text: "Al cerrar la ventana, seguir en la bandeja del sistema";
                                 color: Theme.text;
                                 vertical-alignment: center;
                             }
@@ -415,9 +602,17 @@ export component AppWindow inherits Window {
 
                     Rectangle { vertical-stretch: 1; }
 
-                    Label {
-                        text: "ALTR " + root.version;
-                        font-size: 11px;
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Label {
+                            text: "Ctrl+1…9 cambia de cuenta · Intro juega · Esc cierra Ajustes";
+                            font-size: 11px;
+                            horizontal-stretch: 1;
+                        }
+                        Label {
+                            text: "ALTR " + root.version;
+                            font-size: 11px;
+                        }
                     }
                 }
             }
@@ -481,12 +676,12 @@ export component AppWindow inherits Window {
                             HorizontalLayout {
                                 alignment: start;
                                 Text {
-                                    text: root.current.name;
+                                    text: root.current.alias != "" ? root.current.alias : root.current.name;
                                     color: Theme.text;
                                     font-size: 22px;
                                     font-weight: 600;
                                 }
-                                Text {
+                                if root.current.alias == "": Text {
                                     text: "#" + root.current.tag;
                                     color: Theme.muted;
                                     font-size: 22px;
@@ -506,7 +701,8 @@ export component AppWindow inherits Window {
                                 }
                                 Label {
                                     text: (root.current.active ? "Conectada" : root.current.last-used == "" ? "Sin usar" : "Usada " + root.current.last-used)
-                                        + (root.current.region == "" ? "" : " · " + root.current.region);
+                                        + (root.current.region == "" ? "" : " · " + root.current.region)
+                                        + (root.current.alias == "" ? "" : " · " + root.current.name + "#" + root.current.tag);
                                 }
                             }
                         }
@@ -657,15 +853,7 @@ export component AppWindow inherits Window {
                                     : root.selected-updating ? (root.play-after ? "Se abrirá al terminar" : "Jugar al terminar")
                                     : root.game-running ? "Abierto"
                                     : root.needs-update ? "Actualizar" : "Jugar";
-                                clicked => {
-                                    if (root.selected-updating) {
-                                        root.queue-play();
-                                    } else if (root.needs-update) {
-                                        root.update(root.game);
-                                    } else {
-                                        root.play(root.game);
-                                    }
-                                }
+                                clicked => { root.main-action(); }
                             }
                         }
                     }
@@ -695,14 +883,21 @@ export component AppWindow inherits Window {
 
         // Clicking outside the card cancels.
         TouchArea {
-            clicked => { root.pending = -1; }
+            clicked => { root.close-dialogs(); }
         }
 
-        FocusScope {
-            init => { self.focus(); }
+        // The account menu hands the focus back when it closes, after this dialog
+        // appears; take it once that has happened.
+        Timer {
+            interval: 1ms;
+            running: !confirm-keys.has-focus;
+            triggered => { confirm-keys.focus(); }
+        }
+
+        confirm-keys := FocusScope {
             key-pressed(event) => {
                 if (event.text == Key.Escape) {
-                    root.pending = -1;
+                    root.close-dialogs();
                     return accept;
                 }
                 if (event.text == Key.Return) {
@@ -750,7 +945,7 @@ export component AppWindow inherits Window {
                         spacing: 4px;
                         horizontal-stretch: 1;
                         Text {
-                            text: (root.pending-remove ? "¿Eliminar " : "¿Cambiar a ") + target.name + "#" + target.tag + "?";
+                            text: (root.pending-remove ? "¿Eliminar " : "¿Cambiar a ") + (target.alias != "" ? target.alias : target.name + "#" + target.tag) + "?";
                             color: Theme.text;
                             font-size: 15px;
                             font-weight: 600;
@@ -769,7 +964,7 @@ export component AppWindow inherits Window {
                     spacing: 8px;
                     Button {
                         text: "Cancelar";
-                        clicked => { root.pending = -1; }
+                        clicked => { root.close-dialogs(); }
                     }
                     Button {
                         primary: true;
@@ -779,6 +974,142 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+        }
+    }
+
+    if root.renaming >= 0: Rectangle {
+        property <AccountView> target: root.accounts[root.renaming];
+        property <bool> shown;
+        init => { self.shown = true; }
+        opacity: self.shown ? 1 : 0;
+        animate opacity { duration: 150ms; }
+        background: Theme.dark ? #000000A0 : #00000059;
+
+        function save() {
+            root.rename-account(root.renaming, field.text);
+            root.close-dialogs();
+        }
+
+        // See the confirmation dialog: the closing menu takes the focus back first.
+        Timer {
+            interval: 1ms;
+            running: !field.has-focus;
+            triggered => { field.focus(); }
+        }
+
+        TouchArea {
+            clicked => { root.close-dialogs(); }
+        }
+
+        Rectangle {
+            width: 360px;
+            height: form.preferred-height;
+            border-radius: 12px;
+            background: Theme.card;
+            border-width: 1px;
+            border-color: Theme.border;
+
+            TouchArea { }
+
+            form := VerticalLayout {
+                padding: 20px;
+                spacing: 14px;
+
+                Text {
+                    text: "Cambiar nombre";
+                    color: Theme.text;
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+                Rectangle {
+                    height: 36px;
+                    border-radius: 8px;
+                    background: Theme.bg;
+                    border-width: 1px;
+                    border-color: field.has-focus ? Theme.accent : Theme.border;
+                    animate border-color { duration: 120ms; }
+
+                    field := TextInput {
+                        x: 10px;
+                        width: parent.width - 20px;
+                        text: target.alias != "" ? target.alias : target.name;
+                        color: Theme.text;
+                        selection-background-color: Theme.accent.with-alpha(0.35);
+                        font-size: 14px;
+                        vertical-alignment: center;
+                        single-line: true;
+                        init => { self.select-all(); }
+                        accepted => { save(); }
+                        key-pressed(event) => {
+                            if (event.text == Key.Escape) {
+                                root.close-dialogs();
+                                return accept;
+                            }
+                            reject
+                        }
+                    }
+                }
+                Label {
+                    text: "Solo se ve en ALTR. Déjalo vacío para usar " + target.name + "#" + target.tag + ".";
+                    wrap: word-wrap;
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    Button {
+                        text: "Cancelar";
+                        clicked => { root.close-dialogs(); }
+                    }
+                    Button {
+                        primary: true;
+                        text: "Guardar";
+                        clicked => { save(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Icon in the notification area: ALTR keeps running there when its window is closed.
+export component Tray inherits SystemTrayIcon {
+    icon: @image-url("icons/altr.svg");
+    tooltip: "ALTR";
+    in property <[AccountView]> accounts;
+    in property <image> valorant-icon;
+    in property <image> league-icon;
+    callback switch-account(int);
+    callback play(GameKind);
+    callback open();
+    callback quit();
+
+    clicked => { root.open(); }
+
+    Menu {
+        for acc[i] in root.accounts: MenuItem {
+            title: (acc.active ? "✓ " : "    ") + (acc.alias != "" ? acc.alias : acc.name + "#" + acc.tag);
+            activated => { root.switch-account(i); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: "Jugar Valorant";
+            icon: root.valorant-icon;
+            activated => { root.play(GameKind.valorant); }
+        }
+        MenuItem {
+            title: "Jugar League of Legends";
+            icon: root.league-icon;
+            activated => { root.play(GameKind.league); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: "Abrir ALTR";
+            activated => { root.open(); }
+        }
+        MenuItem {
+            title: "Salir";
+            activated => { root.quit(); }
         }
     }
 }

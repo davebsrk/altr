@@ -13,6 +13,7 @@ slint = { version = "1.18", default-features = false, features = [
     "renderer-software",
     "software-renderer-systemfonts",
     "software-renderer-path",
+    "system-tray",
     "unstable-winit-030",
 ] }
 

@@ -32,11 +32,19 @@ pub struct Account {
     /// Unix seconds; 0 means never used from the launcher.
     #[serde(default)]
     pub last_used: u64,
+    /// Name chosen by the user, shown instead of the Riot ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 impl Account {
+    /// The alias if there is one, otherwise the Riot game name.
+    pub fn display_name(&self) -> &str {
+        self.alias.as_deref().unwrap_or(&self.game_name)
+    }
+
     pub fn initials(&self) -> String {
-        self.game_name
+        self.display_name()
             .chars()
             .filter(|c| c.is_alphanumeric())
             .take(2)
@@ -110,6 +118,7 @@ impl Store {
                 valorant_rank: None,
                 league_rank: None,
                 last_used: 0,
+                alias: None,
             }),
         }
     }
@@ -123,6 +132,33 @@ impl Store {
         };
         *plays = true;
         *slot = Some(Rank { tier: tier.into(), points: points.into(), level, updated: unix_now() });
+    }
+
+    /// Sets or clears (blank, or just the Riot name again) the account's alias.
+    pub fn set_alias(&mut self, id: &str, alias: &str) {
+        if let Some(a) = self.accounts.iter_mut().find(|a| a.id == id) {
+            // Capped so a long name can't push the game icons out of the header.
+            let alias: String = alias.trim().chars().take(24).collect();
+            a.alias = (!alias.is_empty() && alias != a.game_name).then_some(alias);
+        }
+    }
+
+    /// Marks whether the account plays a game. An account always keeps at least one game.
+    pub fn set_plays(&mut self, id: &str, game: crate::config::Game, plays: bool) {
+        let Some(a) = self.accounts.iter_mut().find(|a| a.id == id) else { return };
+        match game {
+            crate::config::Game::Valorant if plays || a.plays_league => a.plays_valorant = plays,
+            crate::config::Game::League if plays || a.plays_valorant => a.plays_league = plays,
+            _ => {}
+        }
+    }
+
+    /// Moves an account to another position in the sidebar.
+    pub fn move_account(&mut self, from: usize, to: usize) {
+        if from < self.accounts.len() && to < self.accounts.len() {
+            let account = self.accounts.remove(from);
+            self.accounts.insert(to, account);
+        }
     }
 
     pub fn remove(&mut self, id: &str) {
@@ -169,6 +205,7 @@ pub fn demo_store(now: u64) -> Store {
         valorant_rank,
         league_rank,
         last_used: now.saturating_sub(ago),
+        alias: None,
     };
     Store {
         active: Some("1".into()),
@@ -192,6 +229,33 @@ mod tests {
         assert_eq!(a.initials(), "XD");
         a.game_name = "ñu".into();
         assert_eq!(a.initials(), "ÑU");
+    }
+
+    #[test]
+    fn alias_games_and_order() {
+        let mut store = demo_store(unix_now());
+        store.set_alias("1", "  Principal ");
+        assert_eq!(store.find("1").unwrap().display_name(), "Principal");
+        assert_eq!(store.find("1").unwrap().initials(), "PR");
+        store.set_alias("1", "   ");
+        assert_eq!(store.find("1").unwrap().alias, None, "a blank alias goes back to the Riot ID");
+        let name = store.find("1").unwrap().game_name.clone();
+        store.set_alias("1", &name);
+        assert_eq!(store.find("1").unwrap().alias, None, "the Riot name itself is no alias");
+
+        // "2" only plays Valorant: it can gain LoL, but never end up with no game.
+        store.set_plays("2", crate::config::Game::Valorant, false);
+        assert!(store.find("2").unwrap().plays_valorant);
+        store.set_plays("2", crate::config::Game::League, true);
+        store.set_plays("2", crate::config::Game::Valorant, false);
+        let smurf = store.find("2").unwrap();
+        assert!(!smurf.plays_valorant && smurf.plays_league);
+
+        store.move_account(0, 2);
+        let ids: Vec<_> = store.accounts.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["2", "3", "1", "4"]);
+        store.move_account(9, 0);
+        assert_eq!(store.accounts.len(), 4, "out of range moves are ignored");
     }
 
     #[test]

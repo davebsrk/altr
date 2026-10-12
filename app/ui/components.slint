@@ -6,6 +6,13 @@ export component Avatar inherits Rectangle {
     in property <bool> selected;
     callback clicked;
     callback context-menu;
+    // Vertical drag with the left button. The offset is measured in the avatar's own
+    // coordinates, so a parent that moves the avatar along adds it up: total += offset.
+    callback drag-moved(length);
+    callback drag-ended;
+
+    // Set once the pointer moves a few pixels while pressed; a drag is not a click.
+    property <bool> dragging;
 
     width: 40px;
     height: 40px;
@@ -39,11 +46,27 @@ export component Avatar inherits Rectangle {
     }
 
     touch := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        mouse-cursor: root.dragging ? grabbing : pointer;
+        clicked => {
+            if (!root.dragging) {
+                root.clicked();
+            }
+        }
+        moved => {
+            if (self.pressed && (root.dragging || abs(self.mouse-y - self.pressed-y) > 6px)) {
+                root.dragging = true;
+                root.drag-moved(self.mouse-y - self.pressed-y);
+            }
+        }
         pointer-event(e) => {
             if (e.button == PointerEventButton.right && e.kind == PointerEventKind.down) {
                 root.context-menu();
+            }
+            if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
+                root.dragging = false;
+            }
+            if (e.button == PointerEventButton.left && e.kind == PointerEventKind.up && root.dragging) {
+                root.drag-ended();
             }
         }
     }

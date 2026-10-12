@@ -38,6 +38,7 @@ fn account_view(a: &Account, active: bool, now: u64) -> AccountView {
         league: rank_view(&a.league_rank, now),
         last_used: accounts::time_ago(a.last_used, now).into(),
         active,
+        alias: a.alias.as_deref().unwrap_or_default().into(),
     }
 }
 
@@ -91,6 +92,20 @@ fn game_icon(product: &str) -> slint::Image {
     slint::Image::from_rgba8(pixels)
 }
 
+thread_local! {
+    // The notification area icon; lives on the UI thread next to the window.
+    static TRAY: RefCell<Option<Tray>> = const { RefCell::new(None) };
+}
+
+/// Brings the window back from the tray (or from behind other windows).
+fn show_window(ui: &AppWindow) {
+    let _ = ui.show();
+    ui.window().with_winit_window(|w| {
+        w.set_minimized(false);
+        w.focus_window();
+    });
+}
+
 /// Pushes the accounts into the UI and selects the active one.
 fn refresh(ui: &AppWindow, store: &Store) {
     let now = accounts::unix_now();
@@ -101,12 +116,14 @@ fn refresh(ui: &AppWindow, store: &Store) {
     let initials: Vec<_> = views.iter().map(|v| v.initials.clone()).collect();
     for (view, a) in views.iter_mut().zip(&store.accounts) {
         if initials.iter().filter(|i| **i == view.initials).count() > 1 {
-            let first = a.game_name.chars().find(|c| c.is_alphanumeric()).into_iter().flat_map(char::to_uppercase);
+            let first = a.display_name().chars().find(|c| c.is_alphanumeric()).into_iter().flat_map(char::to_uppercase);
             view.initials = first.chain(a.tag_line.chars().take(2).flat_map(char::to_uppercase)).collect::<String>().into();
         }
     }
     let first_load = ui.get_accounts().row_count() == 0;
-    ui.set_accounts(ModelRc::new(VecModel::from(views)));
+    let model = ModelRc::new(VecModel::from(views));
+    TRAY.with_borrow(|tray| tray.as_ref().map(|t| t.set_accounts(model.clone())));
+    ui.set_accounts(model);
     if !store.accounts.is_empty() {
         let i = active.and_then(|id| store.position(id)).unwrap_or(0) as i32;
         // Re-selecting resets the game tab to the default; only do it when the account changes.
@@ -199,6 +216,20 @@ struct Actions {
 }
 
 impl Actions {
+    /// A quick change to the saved accounts (order, alias, games); not while an action owns them.
+    fn edit(&self, change: impl FnOnce(&mut Store)) {
+        let ui = self.ui.unwrap();
+        if ui.get_busy() {
+            return;
+        }
+        let mut store = self.store.lock().unwrap();
+        change(&mut store);
+        if let Err(e) = store.save() {
+            show_toast(&ui, &format!("No se pudieron guardar las cuentas: {e}"), true);
+        }
+        refresh(&ui, &store);
+    }
+
     fn account_id(&self, index: i32) -> Option<String> {
         self.store.lock().unwrap().accounts.get(index as usize).map(|a| a.id.clone())
     }
@@ -256,7 +287,13 @@ impl Actions {
                 check_updates(ui.as_weak());
                 match result {
                     Ok(msg) => show_toast(&ui, &msg, false),
-                    Err(msg) => show_toast(&ui, &msg, true),
+                    Err(msg) => {
+                        // Started from the tray: the error needs a window to be seen.
+                        if !ui.window().is_visible() {
+                            show_window(&ui);
+                        }
+                        show_toast(&ui, &msg, true)
+                    }
                 }
             });
         });
@@ -343,6 +380,7 @@ fn main() -> Result<(), slint::PlatformError> {
         theme.set_accent_index(c.accent as i32);
         ui.set_default_game(to_ui_game(c.default_game));
         ui.set_confirm_switch(c.confirm_switch);
+        ui.set_tray_enabled(c.tray);
     }
     refresh(&ui, &store);
 
@@ -357,6 +395,8 @@ fn main() -> Result<(), slint::PlatformError> {
             c.accent = theme.get_accent_index() as usize;
             c.default_game = from_ui_game(ui.get_default_game());
             c.confirm_switch = ui.get_confirm_switch();
+            c.tray = ui.get_tray_enabled();
+            TRAY.with_borrow(|tray| tray.as_ref().map(|t| if c.tray { t.show() } else { t.hide() }));
             sync_title_bar(&ui);
             if let Err(e) = c.save() {
                 show_toast(&ui, &format!("No se pudieron guardar los ajustes: {e}"), true);
@@ -451,6 +491,26 @@ fn main() -> Result<(), slint::PlatformError> {
             });
         }
     });
+    ui.on_move_account({
+        let actions = actions.clone();
+        move |from, to| actions.edit(|store| store.move_account(from as usize, to as usize))
+    });
+    ui.on_rename_account({
+        let actions = actions.clone();
+        move |i, name| {
+            if let Some(id) = actions.account_id(i) {
+                actions.edit(|store| store.set_alias(&id, &name));
+            }
+        }
+    });
+    ui.on_set_plays({
+        let actions = actions.clone();
+        move |i, kind, plays| {
+            if let Some(id) = actions.account_id(i) {
+                actions.edit(|store| store.set_plays(&id, from_ui_game(kind), plays));
+            }
+        }
+    });
     ui.on_cancel({
         let cancel = actions.cancel.clone();
         move || cancel.store(true, Ordering::Relaxed)
@@ -514,9 +574,77 @@ fn main() -> Result<(), slint::PlatformError> {
         move || check_updates(ui.clone())
     });
 
+    // Closing the window leaves ALTR in the tray (when enabled); "Salir" ends it.
+    let tray = Tray::new()?;
+    tray.set_valorant_icon(ui.get_valorant_icon());
+    tray.set_league_icon(ui.get_league_icon());
+    tray.set_accounts(ui.get_accounts());
+    if !ui.get_tray_enabled() {
+        tray.hide()?;
+    }
+    tray.on_open({
+        let ui = ui.as_weak();
+        move || show_window(&ui.unwrap())
+    });
+    tray.on_switch_account({
+        let ui = ui.as_weak();
+        move |i| {
+            // The confirmation (if enabled) and the progress show in the window.
+            let ui = ui.unwrap();
+            show_window(&ui);
+            ui.invoke_request_switch(i);
+        }
+    });
+    tray.on_play({
+        let ui = ui.as_weak();
+        move |kind| {
+            let ui = ui.unwrap();
+            let running = if kind == GameKind::Valorant { ui.get_valorant_running() } else { ui.get_league_running() };
+            if ui.get_busy() || running || ui.get_accounts().row_count() == 0 {
+                show_window(&ui);
+            } else {
+                ui.invoke_play(kind);
+            }
+        }
+    });
+    tray.on_quit({
+        let ui = ui.as_weak();
+        move || {
+            let ui = ui.unwrap();
+            // Stopping halfway through a switch would leave Riot's session files mixed up.
+            if ui.get_busy() {
+                show_window(&ui);
+                show_toast(&ui, "Espera a que termine la acción en curso para salir.", true);
+            } else {
+                let _ = slint::quit_event_loop();
+            }
+        }
+    });
+    TRAY.set(Some(tray));
+    ui.window().on_close_requested({
+        let ui = ui.as_weak();
+        move || {
+            if !ui.unwrap().get_tray_enabled() {
+                let _ = slint::quit_event_loop();
+            }
+            slint::CloseRequestResponse::HideWindow
+        }
+    });
+    // A second launch asks this copy to show itself (it may be hidden in the tray).
+    let show_timer = Timer::default();
+    show_timer.start(slint::TimerMode::Repeated, Duration::from_millis(500), {
+        let ui = ui.as_weak();
+        move || {
+            if altr_core::show_requested() {
+                show_window(&ui.unwrap());
+            }
+        }
+    });
+
     // The winit window only exists once the event loop is running.
     let weak = ui.as_weak();
     Timer::single_shot(Duration::ZERO, move || sync_title_bar(&weak.unwrap()));
 
-    ui.run()
+    ui.show()?;
+    slint::run_event_loop_until_quit()
 }

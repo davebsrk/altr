@@ -30,26 +30,43 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> io::Result<()> {
     fs::rename(tmp, path)
 }
 
+/// The running copy's "show your window" event (a HANDLE stored as an integer).
+static SHOW_EVENT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
 /// Keeps ALTR to one running copy: two would each hold their own copy of the accounts and
-/// overwrite each other's changes. Returns `false` (after bringing the open window to the
-/// front) when ALTR is already running. The named mutex lives as long as the process.
+/// overwrite each other's changes. Returns `false` when ALTR is already running, after asking
+/// that copy to show its window (it may be hidden in the tray). The named mutex and event
+/// live as long as the process.
 pub fn single_instance() -> bool {
     use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
-    use windows_sys::Win32::System::Threading::CreateMutexW;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, SW_RESTORE, SetForegroundWindow, ShowWindow};
+    use windows_sys::Win32::System::Threading::{CreateEventW, CreateMutexW, SetEvent};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
     let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
-    // SAFETY: null-terminated UTF-16 strings that outlive the calls; the mutex handle is
-    // deliberately never closed so it is held until the process exits.
+    // Dev builds get their own names so they run next to the installed ALTR.
+    let (mutex_name, event_name) =
+        if cfg!(debug_assertions) { ("Local\\ALTR-dev", "Local\\ALTR-dev-show") } else { ("Local\\ALTR", "Local\\ALTR-show") };
+    // SAFETY: null-terminated UTF-16 names that outlive the calls; the handles are
+    // deliberately never closed so they are held until the process exits.
     unsafe {
-        let mutex = CreateMutexW(std::ptr::null(), 0, wide("Local\\ALTR").as_ptr());
-        if mutex.is_null() || GetLastError() != ERROR_ALREADY_EXISTS {
-            return true;
+        let mutex = CreateMutexW(std::ptr::null(), 0, wide(mutex_name).as_ptr());
+        let first = mutex.is_null() || GetLastError() != ERROR_ALREADY_EXISTS;
+        // Auto-reset: each signal is seen once by `show_requested`.
+        let event = CreateEventW(std::ptr::null(), 0, 0, wide(event_name).as_ptr());
+        if first {
+            let _ = SHOW_EVENT.set(event as usize);
+        } else {
+            // We hold the foreground (the user just launched us): let the running copy take it.
+            AllowSetForegroundWindow(ASFW_ANY);
+            SetEvent(event);
         }
-        let window = FindWindowW(std::ptr::null(), wide("ALTR").as_ptr());
-        if !window.is_null() {
-            ShowWindow(window, SW_RESTORE);
-            SetForegroundWindow(window);
-        }
+        first
     }
-    false
+}
+
+/// Whether a second launch has asked this copy to show its window since the last call.
+pub fn show_requested() -> bool {
+    use windows_sys::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+    // SAFETY: the handle comes from CreateEventW in `single_instance` and is never closed.
+    SHOW_EVENT.get().is_some_and(|&event| unsafe { WaitForSingleObject(event as HANDLE, 0) == WAIT_OBJECT_0 })
 }
