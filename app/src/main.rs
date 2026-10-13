@@ -322,6 +322,7 @@ fn main() -> Result<(), slint::PlatformError> {
         println!("state:       {:?}", riot::client_state());
         println!("valorant:    {:?}", riot::valorant_stats());
         println!("league:      {:?}", riot::league_stats());
+        println!("patch:       {:?} / {:?}", riot::game_state("valorant"), riot::game_state("league_of_legends"));
         return Ok(());
     }
     // Debug-only driver for live tests: runs the same switcher calls as the UI.

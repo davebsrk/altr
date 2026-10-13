@@ -351,7 +351,11 @@ pub fn launch_game(product: &str) -> Result<(), LaunchError> {
     }
 }
 
+/// The product's patch state as the Riot Client's own window sees it (`patch-proxy`). The
+/// low-level install status (`/patch/v1/installs/…`) only compares against the manifest it
+/// already has, so it reads "up to date" for a new version until the patch starts.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PatchStatus {
     state: String,
     #[serde(default)]
@@ -361,27 +365,16 @@ struct PatchStatus {
 }
 
 #[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
 struct PatchProgress {
-    #[serde(default)]
-    progress: f32,
-    #[serde(default)]
-    update: Option<PatchBytes>,
-}
-
-#[derive(Deserialize, Default)]
-struct PatchBytes {
-    #[serde(default)]
-    downloaded_bytes: u64,
-    #[serde(default)]
-    bytes_to_download: u64,
+    overall_progress: f32,
+    repair_progress: f32,
+    total_bytes_downloaded: u64,
+    total_bytes_to_download: u64,
 }
 
 fn parse_status(body: &str) -> Option<PatchStatus> {
-    #[derive(Deserialize)]
-    struct Outer {
-        patch: PatchStatus,
-    }
-    serde_json::from_str::<Outer>(body).ok().map(|o| o.patch)
+    serde_json::from_str(body).ok()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -405,25 +398,25 @@ fn status_to_state(status: &PatchStatus) -> GameState {
     if let Some(error) = status.error.as_ref().filter(|e| !e.is_null()) {
         return GameState::Failed(error.to_string());
     }
+    let p = &status.progress;
     match status.state.as_str() {
-        "up_to_date" => GameState::UpToDate,
-        "out_of_date" => GameState::NeedsUpdate,
-        "updating" | "repairing" => {
-            let bytes = status.progress.update.as_ref();
-            GameState::Updating {
-                percent: status.progress.progress,
-                downloaded: bytes.map_or(0, |b| b.downloaded_bytes),
-                total: bytes.map_or(0, |b| b.bytes_to_download),
-            }
-        }
-        // Right after the client starts it hasn't verified the install yet.
+        "UpToDate" => GameState::UpToDate,
+        // A paused patch resumes the same way it starts.
+        "OutOfDate" | "NeedsRepair" | "Paused" => GameState::NeedsUpdate,
+        "Updating" | "Repairing" | "DependencyUpdate" => GameState::Updating {
+            percent: if status.state == "Repairing" { p.repair_progress.max(p.overall_progress) } else { p.overall_progress },
+            downloaded: p.total_bytes_downloaded,
+            total: p.total_bytes_to_download,
+        },
+        "StatusError" => GameState::Failed("el Riot Client no pudo comprobar la instalación".into()),
+        // "CheckingForUpdate" right after the client starts, "NotInstalled", "Unknown".
         _ => GameState::Unknown,
     }
 }
 
 pub fn game_state(product: &str) -> GameState {
     let Some(lock) = lockfile().filter(|_| client_running()) else { return GameState::Unknown };
-    api(&lock, "GET", &format!("/patch/v1/installs/{}/status", install_id(product)), None)
+    api(&lock, "GET", &format!("/patch-proxy/v2/patch-states/products/{product}/patchlines/live"), None)
         .and_then(|(_, body)| parse_status(&body))
         .map_or(GameState::Unknown, |s| status_to_state(&s))
 }
@@ -680,18 +673,24 @@ mod tests {
     #[test]
     fn update_state() {
         let state = |s: &str| status_to_state(&parse_status(s).unwrap());
-        assert_eq!(state(r#"{"patch":{"state":"up_to_date","progress":{"progress":0.0},"error":null}}"#), GameState::UpToDate);
-        assert_eq!(state(r#"{"patch":{"state":"out_of_date","tags":["es_MX"],"progress":{"progress":0.0},"error":null}}"#), GameState::NeedsUpdate);
+        // Captured live: Riot's window offered a 4,7 GB update while the low-level install
+        // status still said "up_to_date".
         assert_eq!(
-            state(r#"{"patch":{"state":"updating","progress":{"phase":"Update","progress":40.0,"update":{"downloaded_bytes":5,"bytes_to_download":9}},"error":null}}"#),
+            state(r#"{"error":null,"launchable":false,"previousState":"CheckingForUpdate","progress":{"currentSpeedMbps":0,"overallProgress":0.0,"phase":"none","repairProgress":0.0,"totalBytesDownloaded":0,"totalBytesToDownload":5081058988},"state":"OutOfDate"}"#),
+            GameState::NeedsUpdate
+        );
+        assert_eq!(state(r#"{"error":null,"progress":{"overallProgress":0.0},"state":"UpToDate"}"#), GameState::UpToDate);
+        assert_eq!(
+            state(r#"{"error":null,"progress":{"overallProgress":40.0,"totalBytesDownloaded":5,"totalBytesToDownload":9},"state":"Updating"}"#),
             GameState::Updating { percent: 40.0, downloaded: 5, total: 9 }
         );
         assert_eq!(
-            state(r#"{"patch":{"state":"repairing","progress":{"progress":1.0,"update":null},"error":null}}"#),
-            GameState::Updating { percent: 1.0, downloaded: 0, total: 0 }
+            state(r#"{"error":null,"progress":{"overallProgress":0.0,"repairProgress":12.0},"state":"Repairing"}"#),
+            GameState::Updating { percent: 12.0, downloaded: 0, total: 0 }
         );
-        assert!(matches!(state(r#"{"patch":{"state":"out_of_date","error":"disk full"}}"#), GameState::Failed(_)));
-        assert_eq!(state(r#"{"patch":{"state":"unknown","error":null}}"#), GameState::Unknown);
+        assert_eq!(state(r#"{"error":null,"state":"Paused"}"#), GameState::NeedsUpdate);
+        assert!(matches!(state(r#"{"error":"disk full","state":"OutOfDate"}"#), GameState::Failed(_)));
+        assert_eq!(state(r#"{"error":null,"state":"CheckingForUpdate"}"#), GameState::Unknown);
         assert_eq!(install_id("league_of_legends"), "league_of_legends.live");
     }
 
