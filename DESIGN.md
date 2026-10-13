@@ -199,7 +199,7 @@ altr/
 
 Hecho fuera de fase (2026-10-12): Riot Client oculto, actualizaciones desde el launcher, "Jugar" que actualiza solo y abrir con Windows (v0.1.5).
 
-**Estado (2026-10-12):** todo lo anterior publicado en la v0.1.5 y confirmado funcionando por el usuario. Ideas sin empezar: notas por cuenta en el clic derecho.
+**Estado (2026-10-13):** todo lo anterior publicado en la v0.1.5 y confirmado funcionando por el usuario. La v0.1.6 corrige la detección de actualizaciones de los juegos (patch-proxy; probada en vivo actualizando Valorant). Ideas sin empezar: notas por cuenta en el clic derecho.
 
 ## Marca
 
