@@ -4,7 +4,8 @@ use slint::winit_030::{WinitWindowAccessor, winit::window::Theme as WinitTheme};
 use slint::{ComponentHandle, Model, ModelRc, Timer, VecModel};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::{cell::RefCell, rc::Rc, thread, time::Duration};
+use std::time::{Duration, Instant};
+use std::{cell::RefCell, rc::Rc, thread};
 use altr_core::accounts::{self, Account, Rank, Store};
 use altr_core::config::{self, Config};
 use altr_core::{riot, switcher};
@@ -102,6 +103,7 @@ fn show_window(ui: &AppWindow) {
     let _ = ui.show();
     // When ALTR started hidden, the native window only exists from here on.
     sync_title_bar(ui);
+    check_updates(ui.as_weak(), true);
     ui.window().with_winit_window(|w| {
         w.set_minimized(false);
         w.focus_window();
@@ -174,9 +176,22 @@ fn check_app_update(ui: slint::Weak<AppWindow>) {
 }
 
 /// Looks up pending game updates in the background and flags them in the UI.
-fn check_updates(ui: slint::Weak<AppWindow>) {
+/// Refreshes the "Actualizar" buttons. `wake` (the window was just opened) may sign the hidden
+/// Riot Client in to ask, as a signed-out one can't tell; at most every 10 minutes.
+fn check_updates(ui: slint::Weak<AppWindow>, wake: bool) {
+    static LAST_WAKE: Mutex<Option<Instant>> = Mutex::new(None);
+    let wake = wake
+        && ui.upgrade().is_some_and(|ui| ui.get_accounts().row_count() > 0 && !ui.get_busy())
+        && {
+            let mut last = LAST_WAKE.lock().unwrap();
+            let due = last.is_none_or(|t| t.elapsed() >= Duration::from_secs(600));
+            if due {
+                *last = Some(Instant::now());
+            }
+            due
+        };
     thread::spawn(move || {
-        let (valorant, league) = switcher::pending_updates();
+        let (valorant, league) = switcher::pending_updates(wake);
         let _ = ui.upgrade_in_event_loop(move |ui| {
             ui.set_valorant_update(valorant);
             ui.set_league_update(league);
@@ -258,6 +273,8 @@ impl Actions {
         let mut work = self.store.lock().unwrap().clone();
         let Actions { ui, store, cancel, .. } = self.clone();
         thread::spawn(move || {
+            // Waits for a running update check that is signing the hidden client in.
+            let _client = switcher::client_lock();
             let progress = |msg: &str, fraction: Option<f32>| {
                 let msg = msg.to_owned();
                 let _ = ui.upgrade_in_event_loop(move |ui| {
@@ -286,7 +303,7 @@ impl Actions {
                 if focus {
                     ui.window().with_winit_window(|w| w.focus_window());
                 }
-                check_updates(ui.as_weak());
+                check_updates(ui.as_weak(), false);
                 match result {
                     Ok(msg) => show_toast(&ui, &msg, false),
                     Err(msg) => {
@@ -318,7 +335,7 @@ fn main() -> Result<(), slint::PlatformError> {
         println!("client exe:  {:?}", riot::client_exe());
         println!("session:     {} ({} bytes)", riot::session_file().display(), riot::read_session().map_or(0, |s| s.len()));
         println!("blocking:    {:?}", riot::blocking_process());
-        println!("running:     {}", riot::client_running());
+        println!("running:     {} (window: {})", riot::client_running(), riot::client_window_open());
         println!("state:       {:?}", riot::client_state());
         println!("valorant:    {:?}", riot::valorant_stats());
         println!("league:      {:?}", riot::league_stats());
@@ -327,6 +344,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     // Debug-only driver for live tests: runs the same switcher calls as the UI.
     // `--do add` | `--do switch N` | `--do remove N` | `--do play|update valorant|league` | `--do autostart on|off`
+    // | `--do check-updates` (signs a closed or signed-out client in, as opening the window does)
     #[cfg(debug_assertions)]
     if let Some(pos) = std::env::args().position(|a| a == "--do") {
         let args: Vec<String> = std::env::args().skip(pos + 1).collect();
@@ -351,6 +369,7 @@ fn main() -> Result<(), slint::PlatformError> {
             Some("remove") => id(&store).ok_or("bad index".into()).and_then(|id| switcher::remove_account(&mut store, &id)),
             Some("play") => switcher::play(&mut store, if args.get(1).is_some_and(|g| g == "league") { config::Game::League } else { config::Game::Valorant }, &progress, &AtomicBool::new(false)),
             Some("update") => switcher::update(if args.get(1).is_some_and(|g| g == "league") { config::Game::League } else { config::Game::Valorant }, &progress, &AtomicBool::new(false)),
+            Some("check-updates") => Ok(format!("pending (valorant, league): {:?}", switcher::pending_updates(true))),
             // `--do autostart on|off`: the "ALTR (dev)" startup entry.
             Some("autostart") => altr_core::set_autostart(args.get(1).is_some_and(|v| v == "on")).map(|()| "ok".into()).map_err(|e| e.to_string()),
             _ => Err("unknown command".into()),
@@ -568,7 +587,6 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
-    check_updates(ui.as_weak());
     check_app_update(ui.as_weak());
     // Ranks are cached while a game is open, so look now and then every minute.
     check_ranks(&actions);
@@ -595,7 +613,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let update_timer = Timer::default();
     update_timer.start(slint::TimerMode::Repeated, Duration::from_secs(600), {
         let ui = ui.as_weak();
-        move || check_updates(ui.clone())
+        move || check_updates(ui.clone(), false)
     });
 
     // Closing the window leaves ALTR in the tray (when enabled); "Salir" ends it.
@@ -671,8 +689,10 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // Started with Windows: stay in the tray until opened (without a tray there'd be no way back).
     let background = std::env::args().any(|a| a == "--background");
-    if !(background && ui.get_tray_enabled()) {
+    let shown = !(background && ui.get_tray_enabled());
+    if shown {
         ui.show()?;
     }
+    check_updates(ui.as_weak(), shown);
     slint::run_event_loop_until_quit()
 }

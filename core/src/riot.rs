@@ -379,8 +379,10 @@ fn parse_status(body: &str) -> Option<PatchStatus> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GameState {
-    /// The client isn't running or didn't answer.
+    /// The client isn't running, is signed out (it then hides its patch state) or didn't answer.
     Unknown,
+    /// The client is asking Riot for the latest version (right after it starts).
+    Checking,
     UpToDate,
     NeedsUpdate,
     /// `percent` is 0–100; byte counts are 0 while the client is still preparing.
@@ -409,7 +411,8 @@ fn status_to_state(status: &PatchStatus) -> GameState {
             total: p.total_bytes_to_download,
         },
         "StatusError" => GameState::Failed("el Riot Client no pudo comprobar la instalación".into()),
-        // "CheckingForUpdate" right after the client starts, "NotInstalled", "Unknown".
+        "CheckingForUpdate" => GameState::Checking,
+        // "NotInstalled", "Unknown".
         _ => GameState::Unknown,
     }
 }
@@ -419,6 +422,36 @@ pub fn game_state(product: &str) -> GameState {
     api(&lock, "GET", &format!("/patch-proxy/v2/patch-states/products/{product}/patchlines/live"), None)
         .and_then(|(_, body)| parse_status(&body))
         .map_or(GameState::Unknown, |s| status_to_state(&s))
+}
+
+/// Signs the client in with the session on disk, starting it hidden if needed (as Play does).
+pub fn wake_client() -> io::Result<()> {
+    ensure_client().map(drop)
+}
+
+/// Whether a Riot Client window is on screen (e.g. its sign-in page), which a restart would close.
+pub fn client_window_open() -> bool {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible};
+
+    unsafe extern "system" fn visit(hwnd: HWND, data: LPARAM) -> i32 {
+        // SAFETY: `data` is the `(pids, found)` pair below, alive for the whole EnumWindows call.
+        let (pids, found) = unsafe { &mut *(data as *mut (Vec<u32>, bool)) };
+        let mut pid = 0;
+        // SAFETY: plain queries on a window handle EnumWindows just gave us.
+        if unsafe { IsWindowVisible(hwnd) } != 0 {
+            unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+            *found |= pids.contains(&pid);
+        }
+        (!*found) as i32
+    }
+    let mut state = (client_pids().into_iter().map(|(pid, _)| pid).collect::<Vec<_>>(), false);
+    if state.0.is_empty() {
+        return false;
+    }
+    // SAFETY: the callback only touches `state`, which outlives the call.
+    unsafe { EnumWindows(Some(visit), &mut state as *mut _ as LPARAM) };
+    state.1
 }
 
 /// Starts the client's own update (dependencies included) the way its Play button does:
@@ -690,7 +723,8 @@ mod tests {
         );
         assert_eq!(state(r#"{"error":null,"state":"Paused"}"#), GameState::NeedsUpdate);
         assert!(matches!(state(r#"{"error":"disk full","state":"OutOfDate"}"#), GameState::Failed(_)));
-        assert_eq!(state(r#"{"error":null,"state":"CheckingForUpdate"}"#), GameState::Unknown);
+        assert_eq!(state(r#"{"error":null,"state":"CheckingForUpdate"}"#), GameState::Checking);
+        assert_eq!(state(r#"{"error":null,"state":"NotInstalled"}"#), GameState::Unknown);
         assert_eq!(install_id("league_of_legends"), "league_of_legends.live");
     }
 

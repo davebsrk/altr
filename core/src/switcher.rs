@@ -7,6 +7,7 @@ use crate::config::Game;
 use crate::riot::{self, ClientState, GameState, Identity, LaunchError};
 use crate::vault;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 type Result<T> = std::result::Result<T, String>;
@@ -230,7 +231,7 @@ pub fn update(game: Game, progress: Progress, cancel: &AtomicBool) -> Result<Str
             }
             GameState::Failed(why) => return Err(format!("La actualización de {name} falló: {why}")),
             // Just requested, or a moment where the client doesn't answer: keep waiting.
-            GameState::NeedsUpdate | GameState::Unknown => {}
+            GameState::NeedsUpdate | GameState::Checking | GameState::Unknown => {}
         }
         std::thread::sleep(Duration::from_secs(1));
     }
@@ -314,10 +315,35 @@ pub fn signed_in_account(store: &Store) -> Option<Identity> {
     }
 }
 
+/// Held by anything that restarts the Riot Client or swaps its session, so two never overlap.
+static CLIENT_LOCK: Mutex<()> = Mutex::new(());
+
+pub fn client_lock() -> MutexGuard<'static, ()> {
+    CLIENT_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Whether each game (Valorant, LoL) has an update waiting or in progress. `false` when unknown.
-pub fn pending_updates() -> (bool, bool) {
-    let pending = |p| matches!(riot::game_state(p), GameState::NeedsUpdate | GameState::Updating { .. });
-    (pending("valorant"), pending("league_of_legends"))
+///
+/// A closed or signed-out client hides its patch state (it starts signed out with Windows, and
+/// the hidden one signs out when the game closes), so with `wake` it is first signed in hidden
+/// with the session on disk, as Play does. Not while a game, Riot's window or an action is open.
+pub fn pending_updates(wake: bool) -> (bool, bool) {
+    let wake = wake
+        && !matches!(riot::client_state(), ClientState::LoggedIn(_))
+        && CLIENT_LOCK.try_lock().is_ok_and(|_guard| {
+            riot::blocking_process().is_none() && !riot::client_window_open() && riot::wake_client().is_ok()
+        });
+    // A client that just signed in asks Riot for the latest version first.
+    let deadline = Instant::now() + Duration::from_secs(if wake { 30 } else { 0 });
+    loop {
+        let states = [riot::game_state("valorant"), riot::game_state("league_of_legends")];
+        let waiting = states.contains(&GameState::Checking) || states.iter().all(|s| *s == GameState::Unknown);
+        if !waiting || Instant::now() >= deadline {
+            let pending = |s: &GameState| matches!(s, GameState::NeedsUpdate | GameState::Updating { .. });
+            return (pending(&states[0]), pending(&states[1]));
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
 }
 
 #[cfg(test)]
