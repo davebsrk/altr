@@ -199,7 +199,7 @@ altr/
 
 Hecho fuera de fase (2026-10-12): Riot Client oculto, actualizaciones desde el launcher, "Jugar" que actualiza solo y abrir con Windows (v0.1.5).
 
-**Estado (2026-10-15):** todo lo anterior publicado en la v0.1.5 y confirmado funcionando por el usuario. La v0.1.6 corrige la detección de actualizaciones de los juegos (patch-proxy; probada en vivo actualizando Valorant). La v0.1.7 la hace funcionar con el cliente sin sesión (lo inicia oculto al abrir la ventana; probado en vivo, falta verlo con un parche pendiente). Ideas sin empezar: notas por cuenta en el clic derecho.
+**Estado (2026-10-18):** todo lo anterior publicado en la v0.1.5 y confirmado funcionando por el usuario. La v0.1.6 corrige la detección de actualizaciones de los juegos (patch-proxy; probada en vivo actualizando Valorant). La v0.1.7 la hace funcionar con el cliente sin sesión (lo inicia oculto al abrir la ventana; probado en vivo, falta verlo con un parche pendiente). La v0.1.8 reintenta «Jugar» cuando el cliente recién iniciado aún no ha cargado los términos del juego (respondía 464 y ALTR abría la ventana de Riot; sin probar en vivo). Ideas sin empezar: notas por cuenta en el clic derecho.
 
 ## Marca
 
