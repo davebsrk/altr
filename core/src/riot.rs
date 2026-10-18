@@ -335,9 +335,10 @@ pub fn launch_game(product: &str) -> Result<(), LaunchError> {
     let path = format!("/product-launcher/v1/products/{product}/patchlines/live");
     let mut answer = api(&lock, "POST", &path, None);
     // Right after a (re)start the client can be signed in yet not accept launches for a few
-    // seconds (no answer, 404 or 5xx): retry for up to ~20 s.
+    // seconds (no answer, 404 or 5xx), or still be loading the game's terms and answer 464
+    // "eula_not_accepted" for an account that accepted them: retry for up to ~20 s.
     for _ in 0..10 {
-        if !matches!(answer, None | Some((404 | 500..=599, _))) {
+        if !matches!(answer, None | Some((404 | 464 | 500..=599, _))) {
             break;
         }
         thread::sleep(Duration::from_secs(2));
