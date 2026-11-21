@@ -38,31 +38,50 @@ fn ensure_nothing_open() -> Result<()> {
     Ok(())
 }
 
-/// Which account the session file on disk belongs to: the running client knows for sure,
-/// otherwise it is the one we activated last. `None` when the client is signed out.
-fn session_owner(store: &Store) -> Option<String> {
+/// The account the running client says it is signed in to. Only a fallback for `stash`, asked
+/// before the client is closed: the session file normally names its owner itself.
+fn client_account() -> Option<String> {
     match riot::client_state() {
         ClientState::LoggedIn(me) => Some(me.puuid),
-        ClientState::LoggedOut => None,
-        ClientState::Unavailable => store.active.clone(),
+        _ => None,
     }
 }
 
-/// Saves the on-disk session back to its (stored) owner so its tokens stay fresh.
-fn stash(store: &Store, owner: Option<&str>) {
-    let Some(id) = owner.filter(|id| store.find(id).is_some()) else { return };
-    if let Ok(data) = riot::read_session()
-        && !data.is_empty()
-    {
-        let _ = vault::save(id, &data);
+/// Saves the on-disk session back to the account it belongs to, so the vault always holds the
+/// newest tokens (the client rotates them every time it restores a session). Returns that
+/// account, stored or not; `None` when the file holds no session.
+///
+/// The owner is read from the file, not asked of the client: a hidden client reports "signed
+/// out" once its game closes, and so does the one Windows starts, while the file is still a
+/// valid session that would otherwise be overwritten unsaved.
+fn stash(store: &Store, client: Option<String>) -> Option<String> {
+    let data = riot::read_session().ok().filter(|data| !data.is_empty())?;
+    let owner = riot::session_puuid(&data).or(client)?;
+    if store.find(&owner).is_some() {
+        let _ = vault::save(&owner, &data);
     }
+    Some(owner)
 }
 
 /// Stores the session the client just wrote for `me` and makes it the active account.
 fn capture(store: &mut Store, me: &Identity) -> Result<()> {
+    let missing = || format!("No se encontró la sesión de {}#{}; {LOGIN_HINT}.", me.game_name, me.tag_line);
     // The client writes its session file right after signing in.
     std::thread::sleep(Duration::from_secs(2));
-    let data = riot::read_session().map_err(|_| format!("No se encontró la sesión; {LOGIN_HINT}."))?;
+    let mut data = riot::read_session().map_err(|_| missing())?;
+    // Never file another account's session under this one: if the file still names someone
+    // else (a slow client, or a sign-in without «Mantener sesión iniciada»), wait a little.
+    let foreign = |data: &[u8]| riot::session_puuid(data).is_some_and(|owner| owner != me.puuid);
+    for _ in 0..8 {
+        if !foreign(&data) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        data = riot::read_session().map_err(|_| missing())?;
+    }
+    if foreign(&data) {
+        return Err(missing());
+    }
     vault::save(&me.puuid, &data).map_err(|e| format!("No se pudo guardar la sesión: {e}"))?;
     store.upsert(&me.puuid, &me.game_name, &me.tag_line, &me.region);
     store.activate(&me.puuid);
@@ -100,10 +119,10 @@ pub fn switch_to(store: &mut Store, target: &str, progress: Progress) -> Result<
     let session = vault::load(target)
         .map_err(|_| format!("No hay sesión guardada para {}; {LOGIN_HINT}.", account.riot_id()))?;
 
-    let owner = session_owner(store);
+    let client = client_account();
     progress("Cerrando el Riot Client…", None);
     close_client()?;
-    stash(store, owner.as_deref());
+    stash(store, client);
     riot::write_session(&session).map_err(|e| format!("No se pudo restaurar la sesión: {e}"))?;
     store.activate(target);
     save(store)?;
@@ -195,6 +214,8 @@ pub fn update(game: Game, progress: Progress, cancel: &AtomicBool) -> Result<Str
     // Right after finishing, the client may start a follow-up pass ("mid-patch configuration
     // update"), so "up to date" only counts once it holds for a few seconds.
     let mut settled = 0;
+    // Seconds in a row without the patch moving, so a patch that never starts doesn't spin forever.
+    let mut idle = 0;
     // Download speed in bytes/s, smoothed so the number doesn't jump every second.
     let (mut last, mut speed) = (None::<(u64, Instant)>, 0.0_f64);
     loop {
@@ -204,6 +225,7 @@ pub fn update(game: Game, progress: Progress, cancel: &AtomicBool) -> Result<Str
         }
         match riot::game_state(product) {
             GameState::UpToDate => {
+                idle = 0;
                 settled += 1;
                 if settled >= 5 {
                     return Ok(format!("{name} está actualizado."));
@@ -211,7 +233,7 @@ pub fn update(game: Game, progress: Progress, cancel: &AtomicBool) -> Result<Str
                 progress(&format!("Terminando la actualización de {name}…"), Some(1.0));
             }
             GameState::Updating { percent, downloaded, total } => {
-                settled = 0;
+                (settled, idle) = (0, 0);
                 let now = Instant::now();
                 if let Some((bytes, at)) = last
                     && downloaded >= bytes
@@ -230,8 +252,18 @@ pub fn update(game: Game, progress: Progress, cancel: &AtomicBool) -> Result<Str
                 progress(&text, Some(percent / 100.0));
             }
             GameState::Failed(why) => return Err(format!("La actualización de {name} falló: {why}")),
-            // Just requested, or a moment where the client doesn't answer: keep waiting.
-            GameState::NeedsUpdate | GameState::Checking | GameState::Unknown => {}
+            // Just requested, or a moment where the client doesn't answer: keep waiting, but
+            // not forever (the client closed, lost its session or never started the patch).
+            state => {
+                // A new pass is coming: an earlier "up to date" no longer counts.
+                if state != GameState::Unknown {
+                    settled = 0;
+                }
+                idle += 1;
+                if idle >= 300 {
+                    return Err(format!("El Riot Client no llegó a actualizar {name}. Vuelve a intentarlo."));
+                }
+            }
         }
         std::thread::sleep(Duration::from_secs(1));
     }
@@ -250,19 +282,31 @@ fn size(bytes: u64) -> String {
 pub fn add_account(store: &mut Store, progress: Progress, cancel: &AtomicBool) -> Result<String> {
     ensure_nothing_open()?;
 
-    if let ClientState::LoggedIn(me) = riot::client_state()
-        && store.find(&me.puuid).is_none()
-    {
-        progress("Guardando la cuenta abierta en el Riot Client…", None);
-        capture(store, &me)?;
-        rehide(&me, progress)?;
-        return Ok(format!("Cuenta {}#{} añadida.", me.game_name, me.tag_line));
+    let client = riot::client_state();
+    if let ClientState::LoggedIn(me) = &client {
+        let stored = store.find(&me.puuid).is_some();
+        // ALTR keeps the client hidden, so a visible one signed in to a stored account means
+        // the user has just signed in by hand (its session had expired): save that session
+        // instead of signing them out again to ask for another account.
+        if !stored || riot::client_window_open() {
+            progress(if stored { "Guardando la sesión…" } else { "Guardando la cuenta abierta en el Riot Client…" }, None);
+            capture(store, me)?;
+            rehide(me, progress)?;
+            return Ok(if stored {
+                format!("Sesión de {}#{} actualizada.", me.game_name, me.tag_line)
+            } else {
+                format!("Cuenta {}#{} añadida.", me.game_name, me.tag_line)
+            });
+        }
     }
 
-    let owner = session_owner(store);
+    let client = match client {
+        ClientState::LoggedIn(me) => Some(me.puuid),
+        _ => None,
+    };
     progress("Cerrando el Riot Client…", None);
     close_client()?;
-    stash(store, owner.as_deref());
+    let owner = stash(store, client);
     riot::clear_session().map_err(|e| format!("No se pudo cerrar la sesión actual: {e}"))?;
     store.active = None;
     save(store)?;
@@ -301,6 +345,13 @@ pub fn add_account(store: &mut Store, progress: Progress, cancel: &AtomicBool) -
 /// Forgets an account and deletes its saved session.
 pub fn remove_account(store: &mut Store, id: &str) -> Result<String> {
     let name = store.find(id).map(|a| a.riot_id()).ok_or("Esa cuenta ya no existe.")?;
+    // The client may still hold this account's session: sign it out too, or + would add the
+    // account straight back. Not with a game or an update running; then only ALTR forgets it.
+    let on_disk = riot::read_session().ok().and_then(|data| riot::session_puuid(&data));
+    let signed_in = on_disk.as_deref() == Some(id) || client_account().as_deref() == Some(id);
+    if signed_in && ensure_nothing_open().is_ok() && riot::close_client().is_ok() {
+        let _ = riot::clear_session();
+    }
     vault::remove(id).map_err(|e| format!("No se pudo borrar la sesión guardada: {e}"))?;
     store.remove(id);
     save(store)?;
@@ -333,11 +384,14 @@ pub fn pending_updates(wake: bool) -> (bool, bool) {
         && CLIENT_LOCK.try_lock().is_ok_and(|_guard| {
             riot::blocking_process().is_none() && !riot::client_window_open() && riot::wake_client().is_ok()
         });
-    // A client that just signed in asks Riot for the latest version first.
-    let deadline = Instant::now() + Duration::from_secs(if wake { 30 } else { 0 });
+    // A client that just signed in (woken here, or restarted by the action that just ended)
+    // asks Riot for the latest version first: wait for its answer, or "checking" would read as
+    // "no update" until the next look. One that says nothing is only worth waiting for when
+    // it was just woken.
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let states = [riot::game_state("valorant"), riot::game_state("league_of_legends")];
-        let waiting = states.contains(&GameState::Checking) || states.iter().all(|s| *s == GameState::Unknown);
+        let waiting = states.contains(&GameState::Checking) || (wake && states.iter().all(|s| *s == GameState::Unknown));
         if !waiting || Instant::now() >= deadline {
             let pending = |s: &GameState| matches!(s, GameState::NeedsUpdate | GameState::Updating { .. });
             return (pending(&states[0]), pending(&states[1]));

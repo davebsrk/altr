@@ -47,11 +47,13 @@ pub fn single_instance() -> bool {
         if cfg!(debug_assertions) { ("Local\\ALTR-dev", "Local\\ALTR-dev-show") } else { ("Local\\ALTR", "Local\\ALTR-show") };
     // SAFETY: null-terminated UTF-16 names that outlive the calls; the handles are
     // deliberately never closed so they are held until the process exits.
+    // Bound to names so nothing is freed between CreateMutexW and its GetLastError.
+    let (mutex_name, event_name) = (wide(mutex_name), wide(event_name));
     unsafe {
-        let mutex = CreateMutexW(std::ptr::null(), 0, wide(mutex_name).as_ptr());
+        let mutex = CreateMutexW(std::ptr::null(), 0, mutex_name.as_ptr());
         let first = mutex.is_null() || GetLastError() != ERROR_ALREADY_EXISTS;
         // Auto-reset: each signal is seen once by `show_requested`.
-        let event = CreateEventW(std::ptr::null(), 0, 0, wide(event_name).as_ptr());
+        let event = CreateEventW(std::ptr::null(), 0, 0, event_name.as_ptr());
         if first {
             let _ = SHOW_EVENT.set(event as usize);
         } else {

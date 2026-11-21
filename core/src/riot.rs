@@ -53,6 +53,20 @@ pub fn write_session(data: &[u8]) -> io::Result<()> {
     crate::write_atomic(&session_file(), data)
 }
 
+/// PUUID of the account a session file belongs to, read from the file itself: the `sub` claim
+/// of its `id_token` (a JWT). `None` for a signed-out file. This doesn't depend on the client
+/// running or being signed in, so it also works right after a game closes or Windows starts.
+pub fn session_puuid(session: &[u8]) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Claims {
+        sub: String,
+    }
+    let text = std::str::from_utf8(session).ok()?;
+    let token = text.lines().find_map(|line| line.trim().strip_prefix("id_token:"))?.trim().trim_matches(['"', '\'']);
+    let claims: Claims = serde_json::from_slice(&base64_decode(token.split('.').nth(1)?)?).ok()?;
+    Some(claims.sub).filter(|sub| !sub.is_empty())
+}
+
 /// Removes the saved session so the client starts on its login screen.
 pub fn clear_session() -> io::Result<()> {
     match fs::remove_file(session_file()) {
@@ -327,24 +341,29 @@ pub enum LaunchError {
     Failed(String),
 }
 
-/// Starts a game (`valorant`, `league_of_legends`) through the client's API, like its own
-/// Play button. Shortcut arguments are not used: a running client ignores them and only
-/// shows its window.
-pub fn launch_game(product: &str) -> Result<(), LaunchError> {
-    let lock = ensure_client().map_err(|e| LaunchError::Failed(e.to_string()))?;
+/// Asks the client to launch `product`, which is also how an update starts. Right after a
+/// (re)start the client can be signed in yet not accept launches for a few seconds (no answer,
+/// 404 or 5xx), or still be loading the game's terms and answer 464 "eula_not_accepted" for an
+/// account that accepted them: retry for up to ~20 s.
+fn request_launch(lock: &Lockfile, product: &str) -> Option<(u16, String)> {
     let path = format!("/product-launcher/v1/products/{product}/patchlines/live");
-    let mut answer = api(&lock, "POST", &path, None);
-    // Right after a (re)start the client can be signed in yet not accept launches for a few
-    // seconds (no answer, 404 or 5xx), or still be loading the game's terms and answer 464
-    // "eula_not_accepted" for an account that accepted them: retry for up to ~20 s.
+    let mut answer = api(lock, "POST", &path, None);
     for _ in 0..10 {
         if !matches!(answer, None | Some((404 | 464 | 500..=599, _))) {
             break;
         }
         thread::sleep(Duration::from_secs(2));
-        answer = api(&lock, "POST", &path, None);
+        answer = api(lock, "POST", &path, None);
     }
-    match answer {
+    answer
+}
+
+/// Starts a game (`valorant`, `league_of_legends`) through the client's API, like its own
+/// Play button. Shortcut arguments are not used: a running client ignores them and only
+/// shows its window.
+pub fn launch_game(product: &str) -> Result<(), LaunchError> {
+    let lock = ensure_client().map_err(|e| LaunchError::Failed(e.to_string()))?;
+    match request_launch(&lock, product) {
         Some((200..300, _)) => Ok(()),
         Some((424, body)) if body.contains("not_up_to_date") => Err(LaunchError::NeedsUpdate),
         Some((_, body)) => Err(LaunchError::Failed(body)),
@@ -460,11 +479,12 @@ pub fn client_window_open() -> bool {
 /// with `game_state`. Works with the client hidden.
 pub fn start_update(product: &str) -> io::Result<()> {
     let lock = ensure_client()?;
-    match api(&lock, "POST", &format!("/product-launcher/v1/products/{product}/patchlines/live"), None) {
+    match request_launch(&lock, product) {
         // 424 = "not up to date": the client has started patching. 2xx = it was already
         // up to date and the game is starting.
         Some((200..300 | 424, _)) => Ok(()),
-        other => Err(io::Error::other(format!("el Riot Client rechazó la actualización: {other:?}"))),
+        Some((status, body)) => Err(io::Error::other(format!("el Riot Client la rechazó ({status}): {body}"))),
+        None => Err(io::Error::other("el Riot Client no respondió")),
     }
 }
 
@@ -520,8 +540,9 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
         b'A'..=b'Z' => Some(c - b'A'),
         b'a'..=b'z' => Some(c - b'a' + 26),
         b'0'..=b'9' => Some(c - b'0' + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
+        // Also the URL-safe alphabet, as used by JWTs.
+        b'+' | b'-' => Some(62),
+        b'/' | b'_' => Some(63),
         _ => None,
     };
     let digits: Vec<u8> = input.bytes().filter(|&c| c != b'=' && !c.is_ascii_whitespace()).map(value).collect::<Option<_>>()?;
@@ -688,6 +709,22 @@ mod tests {
         for s in ["", "f", "fo", "foo", "foob", "riot:pw"] {
             assert_eq!(base64_decode(&base64(s.as_bytes())).unwrap(), s.as_bytes());
         }
+    }
+
+    #[test]
+    fn session_file_names_its_owner() {
+        // Same shape as the client's file; JWT parts are unpadded URL-safe base64.
+        let jwt = |payload: &str| format!("eyJhbGciOiJSUzI1NiJ9.{}.c2ln", base64(payload.as_bytes()).trim_end_matches('=').replace('+', "-").replace('/', "_"));
+        let file = |token: &str| format!("psl:\n    authorization:\n        riot-client:\n            claims: \"\"\n            id_token: \"{token}\"\n            refresh_token: \"secret\"\nrso-authenticator:\n    tdid:\n        name: \"tdid\"\n");
+        // "???" and ">>>" on a 3-byte boundary encode to '/' and '+', i.e. '_' and '-' in a JWT.
+        let token = jwt(r#"{"a":"???>>>","sub":"abc-123","acct":{"game_name":"Main"}}"#);
+        assert!(token.contains('_') && token.contains('-'));
+        assert_eq!(session_puuid(file(&token).as_bytes()).as_deref(), Some("abc-123"));
+        let signed_out = "rso-authenticator:\n    tdid:\n        name: \"tdid\"\n";
+        assert_eq!(session_puuid(signed_out.as_bytes()), None);
+        assert_eq!(session_puuid(file("not-a-jwt").as_bytes()), None);
+        assert_eq!(session_puuid(file(&jwt(r#"{"sub":""}"#)).as_bytes()), None);
+        assert_eq!(session_puuid(&[0xFF, 0xFE]), None);
     }
 
     #[test]

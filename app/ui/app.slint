@@ -264,7 +264,8 @@ export component AppWindow inherits Window {
     // The selected game is the one being updated right now.
     property <bool> selected-updating: busy && updating && updating-game == game && progress-fraction >= 0;
     // Opening a game (not updating it first): shown inside the Play button.
-    property <bool> opening: busy && launching && progress-fraction < 0;
+    // Only on that game's tab; on the other one the status card says what is going on.
+    property <bool> opening: busy && launching && updating-game == game && progress-fraction < 0;
     // A running action the status card should show.
     property <bool> task-card: busy && progress != "" && !opening;
     property <bool> game-running: is-valorant ? valorant-running : league-running;

@@ -177,11 +177,12 @@ fn check_app_update(ui: slint::Weak<AppWindow>) {
 
 /// Looks up pending game updates in the background and flags them in the UI.
 /// Refreshes the "Actualizar" buttons. `wake` (the window was just opened) may sign the hidden
-/// Riot Client in to ask, as a signed-out one can't tell; at most every 10 minutes.
+/// Riot Client in to ask, as a signed-out one can't tell; at most every 10 minutes, and only
+/// when an account is active (otherwise there is no session to sign it in with).
 fn check_updates(ui: slint::Weak<AppWindow>, wake: bool) {
     static LAST_WAKE: Mutex<Option<Instant>> = Mutex::new(None);
     let wake = wake
-        && ui.upgrade().is_some_and(|ui| ui.get_accounts().row_count() > 0 && !ui.get_busy())
+        && ui.upgrade().is_some_and(|ui| ui.get_accounts().iter().any(|a| a.active) && !ui.get_busy())
         && {
             let mut last = LAST_WAKE.lock().unwrap();
             let due = last.is_none_or(|t| t.elapsed() >= Duration::from_secs(600));
@@ -334,6 +335,7 @@ fn main() -> Result<(), slint::PlatformError> {
     if std::env::args().any(|a| a == "--probe") {
         println!("client exe:  {:?}", riot::client_exe());
         println!("session:     {} ({} bytes)", riot::session_file().display(), riot::read_session().map_or(0, |s| s.len()));
+        println!("owner:       {:?}", riot::read_session().ok().and_then(|s| riot::session_puuid(&s)));
         println!("blocking:    {:?}", riot::blocking_process());
         println!("running:     {} (window: {})", riot::client_running(), riot::client_window_open());
         println!("state:       {:?}", riot::client_state());
@@ -666,7 +668,13 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.window().on_close_requested({
         let ui = ui.as_weak();
         move || {
-            if !ui.unwrap().get_tray_enabled() {
+            let ui = ui.unwrap();
+            if !ui.get_tray_enabled() {
+                // Same as "Salir": stopping halfway through a switch would mix up the session files.
+                if ui.get_busy() {
+                    show_toast(&ui, "Espera a que termine la acción en curso para salir.", true);
+                    return slint::CloseRequestResponse::KeepWindowShown;
+                }
                 let _ = slint::quit_event_loop();
             }
             slint::CloseRequestResponse::HideWindow

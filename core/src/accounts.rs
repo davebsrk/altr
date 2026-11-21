@@ -76,7 +76,12 @@ impl Store {
     }
 
     pub fn load_from(path: &Path) -> Self {
-        fs::read_to_string(path).ok().and_then(|s| toml::from_str(&s).ok()).unwrap_or_default()
+        let Ok(text) = fs::read_to_string(path) else { return Self::default() };
+        toml::from_str(&text).unwrap_or_else(|_| {
+            // Keep a copy of a file we can't read: the next save would overwrite every account.
+            let _ = fs::copy(path, path.with_extension("bad.toml"));
+            Self::default()
+        })
     }
 
     pub fn save_to(&self, path: &Path) -> io::Result<()> {
@@ -301,6 +306,11 @@ mod tests {
         store.remove("new");
         assert_eq!(store.active, None);
         assert_eq!(store.accounts.len(), 4);
+
+        // A damaged file loads as empty, but a copy survives the save that follows.
+        fs::write(&path, "active = [broken").unwrap();
+        assert_eq!(Store::load_from(&path), Store::default());
+        assert_eq!(fs::read_to_string(dir.join("accounts.bad.toml")).unwrap(), "active = [broken");
 
         fs::remove_dir_all(dir).unwrap();
     }
