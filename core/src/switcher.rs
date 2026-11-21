@@ -24,6 +24,17 @@ fn ids(game: Game) -> (&'static str, &'static str) {
     }
 }
 
+/// A patch state that hasn't settled yet: the client is asking Riot for the latest version or,
+/// for a few seconds right after signing in, checking the games' dependencies, which it reports
+/// as an update with nothing to download (seen live for both games, one of them up to date).
+fn settling(state: &GameState) -> bool {
+    match state {
+        GameState::Checking => true,
+        GameState::Updating { percent, total, .. } => *percent == 0.0 && *total == 0,
+        _ => false,
+    }
+}
+
 fn ensure_nothing_open() -> Result<()> {
     if let Some(what) = riot::blocking_process() {
         return Err(format!("{what} está abierto. Ciérralo antes de cambiar de cuenta."));
@@ -31,7 +42,16 @@ fn ensure_nothing_open() -> Result<()> {
     // Switching restarts the client, which would cut a running download short.
     for game in [Game::Valorant, Game::League] {
         let (product, name) = ids(game);
-        if let GameState::Updating { .. } = riot::game_state(product) {
+        let mut state = riot::game_state(product);
+        // An "update" with nothing to download may be that dependency check: give it a moment.
+        for _ in 0..10 {
+            if !matches!(state, GameState::Updating { .. }) || !settling(&state) {
+                break;
+            }
+            std::thread::sleep(Duration::from_secs(1));
+            state = riot::game_state(product);
+        }
+        if let GameState::Updating { .. } = state {
             return Err(format!("{name} se está actualizando. Espera a que termine o cancélalo."));
         }
     }
@@ -385,13 +405,13 @@ pub fn pending_updates(wake: bool) -> (bool, bool) {
             riot::blocking_process().is_none() && !riot::client_window_open() && riot::wake_client().is_ok()
         });
     // A client that just signed in (woken here, or restarted by the action that just ended)
-    // asks Riot for the latest version first: wait for its answer, or "checking" would read as
-    // "no update" until the next look. One that says nothing is only worth waiting for when
-    // it was just woken.
+    // asks Riot for the latest version and checks dependencies first: wait for a settled
+    // answer, or "checking" would read as "no update" (and the dependency check as an update)
+    // until the next look. One that says nothing is only worth waiting for when it was just woken.
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let states = [riot::game_state("valorant"), riot::game_state("league_of_legends")];
-        let waiting = states.contains(&GameState::Checking) || (wake && states.iter().all(|s| *s == GameState::Unknown));
+        let waiting = states.iter().any(settling) || (wake && states.iter().all(|s| *s == GameState::Unknown));
         if !waiting || Instant::now() >= deadline {
             let pending = |s: &GameState| matches!(s, GameState::NeedsUpdate | GameState::Updating { .. });
             return (pending(&states[0]), pending(&states[1]));
@@ -402,6 +422,20 @@ pub fn pending_updates(wake: bool) -> (bool, bool) {
 
 #[cfg(test)]
 mod tests {
+    use super::{GameState, settling};
+
+    #[test]
+    fn unsettled_patch_states() {
+        assert!(settling(&GameState::Checking));
+        // The dependency check right after signing in: an "update" with nothing to download.
+        assert!(settling(&GameState::Updating { percent: 0.0, downloaded: 0, total: 0 }));
+        assert!(!settling(&GameState::Updating { percent: 0.0, downloaded: 0, total: 5_000_000 }));
+        assert!(!settling(&GameState::Updating { percent: 12.0, downloaded: 0, total: 0 }));
+        for state in [GameState::UpToDate, GameState::NeedsUpdate, GameState::Unknown] {
+            assert!(!settling(&state));
+        }
+    }
+
     #[test]
     fn sizes() {
         assert_eq!(super::size(0), "0 MB");

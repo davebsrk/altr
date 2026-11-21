@@ -47,7 +47,7 @@ Objetivo: cambiar de cuenta en ~3 s sin cerrar sesión a mano, con una app liger
   - "Eliminar cuenta" en rojo, con confirmación (botón rojo sea cual sea el acento).
   - Los diálogos abiertos desde el menú toman el foco cuando el menú termina de cerrarse (si no, Slint se lo devolvía a la ventana y Enter pulsaba "Jugar").
 - **Atajos de teclado:** Ctrl+1…9 cambia a esa cuenta (con la misma confirmación que el clic); Intro hace lo del botón principal (Jugar, Actualizar o Jugar al terminar); Escape cierra Ajustes y los diálogos. Se recuerdan en una línea al pie de Ajustes.
-- **Bandeja del sistema:** icono de ALTR con menú nativo: las cuentas (✓ la activa; elegir una muestra la ventana con la confirmación), "Jugar Valorant", "Jugar League of Legends", "Abrir ALTR" y "Salir". Clic izquierdo en el icono: abre la ventana. Cerrar la ventana la oculta en la bandeja ("Al cerrar la ventana, seguir en la bandeja del sistema", activado por defecto; desactivado, cerrar sale y no hay icono). "Salir" con una tarea en curso no sale: muestra la ventana y avisa (cortar un cambio de cuenta a medias dejaría mezclados los archivos de sesión). Si algo lanzado desde la bandeja falla, la ventana se muestra para enseñar el error.
+- **Bandeja del sistema:** icono de ALTR con menú nativo: las cuentas (✓ la activa; elegir una muestra la ventana con la confirmación), "Jugar Valorant", "Jugar League of Legends", "Abrir ALTR" y "Salir". Clic izquierdo en el icono: abre la ventana. Cerrar la ventana la oculta en la bandeja ("Al cerrar la ventana, seguir en la bandeja del sistema", activado por defecto; desactivado, cerrar sale y no hay icono). "Salir" con una tarea en curso no sale: muestra la ventana y avisa (cortar un cambio de cuenta a medias dejaría mezclados los archivos de sesión). Lo mismo al cerrar la ventana con la bandeja desactivada: avisa y la ventana sigue abierta. Si algo lanzado desde la bandeja falla, la ventana se muestra para enseñar el error.
 - **Abrir con Windows** (Ajustes, desactivado por defecto): valor `ALTR` en `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` con `"<ruta>\altr.exe" --background` (sin admin; aparece en "Aplicaciones de arranque" del Administrador de tareas). Con `--background` ALTR arranca solo en la bandeja; si la bandeja está desactivada, abre la ventana (si no, no habría forma de volver a ella). La ruta se reescribe en cada arranque y el desinstalador de Velopack borra el valor. Las builds de desarrollo usan `ALTR (dev)`.
 - **Ajustes** se desplaza con la rueda cuando la ventana es más baja de lo que necesita (tamaño mínimo).
 - **Ventana:** 720×440 (mínimo 600×400), barra de título nativa de Windows 11: sigue el tema elegido y conserva snap layouts y redimensionado.
@@ -87,7 +87,7 @@ El tinte suave del acento (fondo del icono de rango, por ejemplo) es el mismo co
 ### Rutas de Riot (verificadas en esta máquina)
 
 - Instalaciones: `C:\ProgramData\Riot Games\RiotClientInstalls.json` → `rc_default` apunta a `RiotClientServices.exe`.
-- Sesión: `%LOCALAPPDATA%\Riot Games\Riot Client\Data\RiotGamesPrivateSettings.yaml`.
+- Sesión: `%LOCALAPPDATA%\Riot Games\Riot Client\Data\RiotGamesPrivateSettings.yaml`. Contiene `psl.authorization.riot-client` con un `id_token` (JWT cuyo `sub` es el PUUID: **el archivo dice de quién es**) y un `refresh_token` que **rota cada vez que el cliente restaura la sesión** (`refresh_token_write_count`). Un archivo sin sesión solo trae la cookie `tdid`.
 - `Data\Sessions\` solo contiene un heartbeat; no hace falta guardarlo.
 - API local del Riot Client: `%LOCALAPPDATA%\Riot Games\Riot Client\Config\lockfile`.
 - API local de LoL (LCU): `lockfile` en la carpeta de instalación de League of Legends.
@@ -104,12 +104,14 @@ El launcher mantiene el Riot Client sin ventana (`RiotClientServices.exe --headl
 ### Cambiar de cuenta
 
 1. Si Valorant (`VALORANT.exe`, `VALORANT-Win64-Shipping.exe`), una partida de LoL (`League of Legends.exe`) o el cliente de LoL (`LeagueClientUx.exe`, porque cerrarlo en selección de campeón cuenta como abandono) están abiertos, o un juego se está actualizando (reiniciar el cliente cortaría la descarga) → no hacer nada y avisar.
-2. Preguntar al cliente (API local) de quién es la sesión actual y, tras cerrarlo, guardarla en esa cuenta para que sus tokens no caduquen.
+2. Tras cerrar el cliente, leer del propio archivo de sesión de quién es (`sub` del `id_token`) y guardarlo en esa cuenta, para que el almacén tenga siempre el token más nuevo. No se pregunta al cliente: el oculto dice "sin sesión" en cuanto se cierra el juego, y el que Windows arranca también, aunque el archivo siga siendo válido (así se quedaba el almacén 9 rotaciones por detrás). Solo si el archivo no trae `id_token` se usa lo que diga el cliente; nunca se supone que es de la cuenta activa.
 3. Cerrar el cliente (servicio primero).
 4. Descifrar la sesión guardada de la cuenta y escribirla en `RiotGamesPrivateSettings.yaml`.
 5. Lanzar el cliente oculto ("Conectando con Nombre#TAG…"). ~7 s en total.
 6. Cuando la API local confirma (hasta 45 s) la sesión, volver a guardar el archivo para que no caduque.
 7. Si la sesión ha caducado → se abre la ventana de Riot en su pantalla de login y el launcher avisa: iniciar sesión (con «Mantener sesión iniciada») y pulsar + para guardar la sesión nueva.
+
+Justo después de iniciar sesión el cliente comprueba las dependencias de los juegos y durante unos segundos lo anuncia como una actualización sin nada que descargar (`DependencyUpdate`, 0 bytes): el bloqueo del paso 1 le da hasta 10 s antes de negarse.
 
 ### Jugar
 
@@ -120,17 +122,21 @@ Si el juego necesita actualizarse o repararse, el cliente responde `424 launch_f
 ### Actualizaciones
 
 - **Estado:** `GET /patch-proxy/v2/patch-states/products/<producto>/patchlines/live`, el mismo que usa la ventana de Riot → `state` (`UpToDate`; `OutOfDate`/`NeedsRepair`/`Paused` = pendiente; `Updating`/`Repairing`/`DependencyUpdate` = en curso; `StatusError`) y `progress.overallProgress` (0–100), `totalBytesDownloaded`/`totalBytesToDownload`. **No usar** `/patch/v1/installs/<producto>.live/status`: compara con el manifiesto que ya tiene y dice `up_to_date` ante una versión nueva hasta que empieza el parche (comprobado: Riot ofrecía 4,7 GB y ALTR solo mostraba "Jugar"). La parte `game_patch` de LoL la gestiona el propio cliente de LoL y Riot la ignora para "al día". Estados desconocidos (`CheckingForUpdate` con el cliente recién arrancado) no marcan nada. **Solo responde con sesión iniciada:** el cliente que Riot arranca con Windows (`--launch-background-mode`) y el oculto tras cerrar el juego no tienen sesión y contestan 404 a todo (así se coló un parche de Valorant con ALTR en "Jugar").
-- **Aviso:** un punto de acento en el selector de juego y el botón pasa a "Actualizar <juego>" con icono de descarga. Se comprueba al abrir, tras cada acción y cada 10 minutos. Al abrir la ventana (como mucho cada 10 minutos), si el cliente no tiene sesión, ALTR lo inicia oculto con la sesión guardada (como Jugar) y espera a que Riot compruebe la versión (~12 s); no lo hace con un juego abierto, con la ventana de Riot visible ni sin cuentas. Las acciones esperan a que termine para no reiniciar el cliente a la vez.
-- **Actualizar:** el mismo `POST` de Jugar (→ 424 → el cliente parchea con su flujo oficial). El botón se llena como barra de progreso ("Actualizando League of Legends… 34 %") con "Cancelar" al lado (`DELETE /patch/v1/installs/<id>/requests/patch`). Solo se da por terminada cuando "al día" se mantiene 5 s, porque el cliente puede encadenar una segunda pasada.
+- **Aviso:** un punto de acento en el selector de juego y el botón pasa a "Actualizar <juego>" con icono de descarga. Se comprueba al abrir, tras cada acción y cada 10 minutos. Al abrir la ventana (como mucho cada 10 minutos), si el cliente no tiene sesión, ALTR lo inicia oculto con la sesión guardada (como Jugar) y espera a que Riot compruebe la versión (~12 s); no lo hace con un juego abierto, con la ventana de Riot visible ni sin cuenta activa. Las acciones esperan a que termine para no reiniciar el cliente a la vez. Mientras el estado no está asentado (`CheckingForUpdate`, o la comprobación de dependencias que aparece como actualización de 0 bytes) se espera hasta 30 s antes de marcar nada.
+- **Actualizar:** el mismo `POST` de Jugar (→ 424 → el cliente parchea con su flujo oficial). El botón se llena como barra de progreso ("Actualizando League of Legends… 34 %") con "Cancelar" al lado (`DELETE /patch/v1/installs/<id>/requests/patch`). Solo se da por terminada cuando "al día" se mantiene 5 s, porque el cliente puede encadenar una segunda pasada. El `POST` se reintenta ~20 s con el cliente recién arrancado, igual que en Jugar, y si el parche no llega a moverse en 5 minutos se abandona con un aviso.
 - **Descartado:** pedir el parche a bajo nivel (`PUT /patch/v1/installs/{id}/requests/patch` con la URL del manifiesto). Descarga los archivos pero el registro de productos de Riot no lo da por instalado y al reiniciar vuelve a descargarlo todo.
 
 ### Añadir una cuenta
 
-1. Si el Riot Client ya tiene abierta una cuenta que no está guardada → guardarla directamente.
+1. Si el Riot Client ya tiene abierta una cuenta que no está guardada → guardarla directamente. Igual si es una cuenta guardada **y la ventana de Riot está visible**: ALTR mantiene el cliente oculto, así que eso significa que se acaba de iniciar sesión a mano (sesión caducada); se actualiza su sesión y se oculta el cliente, en vez de cerrar la sesión para pedir otra cuenta.
 2. Si no: cerrar el Riot Client (guardando antes la sesión de la cuenta activa), borrar el archivo de sesión y abrir la ventana de Riot en su login. El botón muestra "Inicia sesión en la ventana de Riot y marca «Mantener sesión iniciada»" con "Cancelar" (espera hasta 5 min).
 3. Detectar el login vía la API local (`/rso-auth/v1/authorization`) y leer PUUID (`sub`), Riot ID (`acct`) y región de la cuenta (`region.tag`, p. ej. "lan") de `/rso-auth/v1/authorization/userinfo`. (La región del chat no sirve: una cuenta LAN aparece como "br1".)
 4. Guardar la sesión cifrada (si la cuenta ya existía, solo se actualiza), reiniciar el cliente oculto y traer el launcher al frente. El launcher nunca ve ni guarda contraseñas.
 5. Si se cancela o se agota la espera → volver a conectar, oculta, la cuenta que estaba activa.
+
+Al guardar, se espera a que el archivo de sesión nombre a la cuenta que acaba de entrar; si sigue nombrando a otra (inicio sin «Mantener sesión iniciada»), no se guarda bajo esta.
+
+**Eliminar una cuenta** borra su sesión guardada y, si el cliente la tiene abierta, también lo cierra y borra el archivo de sesión (si no, + la volvería a añadir al instante). Con un juego abierto o una actualización en curso solo la olvida ALTR.
 
 Al arrancar, si el Riot Client tiene abierta una cuenta guardada, el launcher actualiza su Riot ID y región, y la marca como activa si se cambió a mano.
 
@@ -200,6 +206,8 @@ altr/
 Hecho fuera de fase (2026-10-12): Riot Client oculto, actualizaciones desde el launcher, "Jugar" que actualiza solo y abrir con Windows (v0.1.5).
 
 **Estado (2026-10-18):** todo lo anterior publicado en la v0.1.5 y confirmado funcionando por el usuario. La v0.1.6 corrige la detección de actualizaciones de los juegos (patch-proxy; probada en vivo actualizando Valorant). La v0.1.7 la hace funcionar con el cliente sin sesión (lo inicia oculto al abrir la ventana; probado en vivo, falta verlo con un parche pendiente). La v0.1.8 reintenta «Jugar» cuando el cliente recién iniciado aún no ha cargado los términos del juego (respondía 464 y ALTR abría la ventana de Riot; sin probar en vivo). Ideas sin empezar: notas por cuenta en el clic derecho.
+
+**Sin publicar (2026-11-21):** revisión completa del proyecto. La sesión se guarda según el dueño que nombra el propio archivo, + actualiza una sesión renovada a mano, eliminar una cuenta cierra su sesión, cerrar la ventana sin bandeja no corta una acción, Actualizar reintenta como Jugar, el aviso de parches espera a un estado asentado y Slint 1.19 (ventana transparente al restaurar). Probado en vivo: cambio de cuenta con el cliente "sin sesión" (el almacén pasó de la rotación 15 a la 24), añadir cancelado, + con la ventana de Riot visible, eliminar la cuenta activa, y la ventana real minimizada y restaurada 6 veces. Sin probar en vivo: el reintento de Actualizar (pulsarlo descarga el parche o abre el juego) y el cierre de la ventana con una acción en curso.
 
 ## Marca
 
