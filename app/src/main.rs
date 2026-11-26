@@ -192,10 +192,16 @@ fn check_updates(ui: slint::Weak<AppWindow>, wake: bool) {
             due
         };
     thread::spawn(move || {
-        let (valorant, league) = switcher::pending_updates(wake);
-        let _ = ui.upgrade_in_event_loop(move |ui| {
-            ui.set_valorant_update(valorant);
-            ui.set_league_update(league);
+        // Each game is flagged as soon as its own state is known; `None` keeps what is shown.
+        switcher::pending_updates(wake, &|valorant, league| {
+            let _ = ui.upgrade_in_event_loop(move |ui| {
+                if let Some(pending) = valorant {
+                    ui.set_valorant_update(pending);
+                }
+                if let Some(pending) = league {
+                    ui.set_league_update(pending);
+                }
+            });
         });
     });
 }
@@ -254,7 +260,11 @@ impl Actions {
 
     /// `focus` brings the launcher back to the front afterwards (e.g. after signing in in Riot's window).
     /// Returns false when another action is still running.
-    fn run<F>(&self, cancellable: bool, focus: bool, job: F) -> bool
+    ///
+    /// `label` is shown at once, with a spinner, until the action reports its first step: the
+    /// start can be silent for a while (waiting for a running update check, or for the client
+    /// to answer) and must not look like a frozen launcher.
+    fn run<F>(&self, label: &str, cancellable: bool, focus: bool, job: F) -> bool
     where
         F: FnOnce(&mut Store, switcher::Progress, &AtomicBool) -> Result<String, String> + Send + 'static,
     {
@@ -266,7 +276,7 @@ impl Actions {
         ui.set_play_after(false);
         self.play_after.store(false, Ordering::Relaxed);
         ui.set_can_cancel(cancellable);
-        ui.set_progress("".into());
+        ui.set_progress(label.into());
         ui.set_progress_detail("".into());
         ui.set_toast_visible(false);
         self.cancel.store(false, Ordering::Relaxed);
@@ -371,7 +381,14 @@ fn main() -> Result<(), slint::PlatformError> {
             Some("remove") => id(&store).ok_or("bad index".into()).and_then(|id| switcher::remove_account(&mut store, &id)),
             Some("play") => switcher::play(&mut store, if args.get(1).is_some_and(|g| g == "league") { config::Game::League } else { config::Game::Valorant }, &progress, &AtomicBool::new(false)),
             Some("update") => switcher::update(if args.get(1).is_some_and(|g| g == "league") { config::Game::League } else { config::Game::Valorant }, &progress, &AtomicBool::new(false)),
-            Some("check-updates") => Ok(format!("pending (valorant, league): {:?}", switcher::pending_updates(true))),
+            Some("check-updates") => {
+                let answer = std::cell::Cell::new((None, None));
+                switcher::pending_updates(true, &|valorant, league| {
+                    println!("… valorant {valorant:?}, league {league:?}");
+                    answer.set((valorant, league));
+                });
+                Ok(format!("pending (valorant, league): {:?}", answer.get()))
+            }
             // `--do autostart on|off`: the "ALTR (dev)" startup entry.
             Some("autostart") => altr_core::set_autostart(args.get(1).is_some_and(|v| v == "on")).map(|()| "ok".into()).map_err(|e| e.to_string()),
             _ => Err("unknown command".into()),
@@ -460,7 +477,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let actions = actions.clone();
         move |i| {
             if let Some(id) = actions.account_id(i) {
-                actions.run(false, false, move |store, progress, _| switcher::switch_to(store, &id, progress));
+                actions.run("Cambiando de cuenta…", false, false, move |store, progress, _| switcher::switch_to(store, &id, progress));
             }
         }
     });
@@ -468,7 +485,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let actions = actions.clone();
         move |i| {
             if let Some(id) = actions.account_id(i) {
-                actions.run(false, false, move |store, _, _| switcher::remove_account(store, &id));
+                actions.run("Eliminando la cuenta…", false, false, move |store, _, _| switcher::remove_account(store, &id));
             }
         }
     });
@@ -476,7 +493,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let actions = actions.clone();
         move |kind| {
             let game = from_ui_game(kind);
-            if actions.run(false, false, move |store, progress, cancel| switcher::play(store, game, progress, cancel)) {
+            if actions.run("Abriendo el juego…", false, false, move |store, progress, cancel| switcher::play(store, game, progress, cancel)) {
                 // If the game needs an update first, the button already reads "Se abrirá al terminar".
                 let ui = actions.ui.unwrap();
                 ui.set_updating(true);
@@ -489,7 +506,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_add_account({
         let actions = actions.clone();
         move || {
-            actions.run(true, true, switcher::add_account);
+            actions.run("Preparando el Riot Client…", true, true, switcher::add_account);
         }
     });
     ui.on_update({
@@ -497,7 +514,7 @@ fn main() -> Result<(), slint::PlatformError> {
         move |kind| {
             let game = from_ui_game(kind);
             let play_after = actions.play_after.clone();
-            let started = actions.run(true, false, move |store, progress, cancel| {
+            let started = actions.run("Preparando la actualización…", true, false, move |store, progress, cancel| {
                 let done = switcher::update(game, progress, cancel)?;
                 if play_after.load(Ordering::Relaxed) {
                     switcher::play(store, game, progress, cancel)
@@ -522,7 +539,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_install_app_update({
         let actions = actions.clone();
         move || {
-            actions.run(false, false, |_, progress, _| {
+            actions.run("Buscando la actualización de ALTR…", false, false, |_, progress, _| {
                 let um = app_updates().ok_or("ALTR no está instalado con su instalador.")?;
                 let velopack::UpdateCheck::UpdateAvailable(info) = um.check_for_updates().map_err(|e| e.to_string())? else {
                     return Ok("ALTR ya está actualizado.".into());
@@ -559,6 +576,24 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_cancel({
         let cancel = actions.cancel.clone();
         move || cancel.store(true, Ordering::Relaxed)
+    });
+
+    // Closing the window leaves ALTR in the tray (when enabled); without a tray it ends it.
+    // Set before the headless snapshot so `--uitest` can check it.
+    ui.window().on_close_requested({
+        let ui = ui.as_weak();
+        move || {
+            let ui = ui.unwrap();
+            if !ui.get_tray_enabled() {
+                // Same as "Salir": stopping halfway through a switch would mix up the session files.
+                if ui.get_busy() {
+                    show_toast(&ui, "Espera a que termine la acción en curso para salir.", true);
+                    return slint::CloseRequestResponse::KeepWindowShown;
+                }
+                let _ = slint::quit_event_loop();
+            }
+            slint::CloseRequestResponse::HideWindow
+        }
     });
 
     #[cfg(debug_assertions)]
@@ -618,7 +653,7 @@ fn main() -> Result<(), slint::PlatformError> {
         move || check_updates(ui.clone(), false)
     });
 
-    // Closing the window leaves ALTR in the tray (when enabled); "Salir" ends it.
+    // The tray icon: its menu switches accounts, plays, opens the window and "Salir" ends ALTR.
     let tray = Tray::new()?;
     tray.set_valorant_icon(ui.get_valorant_icon());
     tray.set_league_icon(ui.get_league_icon());
@@ -665,21 +700,6 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
     TRAY.set(Some(tray));
-    ui.window().on_close_requested({
-        let ui = ui.as_weak();
-        move || {
-            let ui = ui.unwrap();
-            if !ui.get_tray_enabled() {
-                // Same as "Salir": stopping halfway through a switch would mix up the session files.
-                if ui.get_busy() {
-                    show_toast(&ui, "Espera a que termine la acción en curso para salir.", true);
-                    return slint::CloseRequestResponse::KeepWindowShown;
-                }
-                let _ = slint::quit_event_loop();
-            }
-            slint::CloseRequestResponse::HideWindow
-        }
-    });
     // A second launch asks this copy to show itself (it may be hidden in the tray).
     let show_timer = Timer::default();
     show_timer.start(slint::TimerMode::Repeated, Duration::from_millis(500), {

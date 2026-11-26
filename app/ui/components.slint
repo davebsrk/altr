@@ -336,7 +336,7 @@ export component Toast inherits Rectangle {
 }
 
 // Game switcher tile: the game's official icon, dimmed unless selected. `progress` (0–1)
-// draws a ring around it while the game updates; `badge` marks a waiting update.
+// fills the tile's own border while the game updates; `badge` marks a waiting update.
 export component GameTile inherits Rectangle {
     in property <image> icon;
     in property <string> fallback;
@@ -345,10 +345,23 @@ export component GameTile inherits Rectangle {
     in property <float> progress: -1;
     callback clicked;
 
-    // Ring geometry in a 54×54 viewbox: an arc of radius 24 from 12 o'clock, clockwise.
-    property <float> done: min(max(root.progress, 0), 0.999);
-    property <float> end-x: 27 + 24 * sin(done * 360deg);
-    property <float> end-y: 27 - 24 * cos(done * 360deg);
+    // The progress line follows the border: a rounded square in a 44×44 viewbox, traced
+    // clockwise from the top centre, 1 px inside the edge (corner radius 11). It is made of
+    // 5 straight runs and 4 quarter turns; `drawn` is how much of its length is filled.
+    property <float> drawn: min(max(root.progress, 0), 1) * 149.115;
+    // How much (0–1) of the piece that starts at `start` is filled.
+    pure function part(start: float, length: float) -> float {
+        return min(max((root.drawn - start) / length, 0), 1);
+    }
+    pure function run(start: float, length: float, x0: float, y0: float, x1: float, y1: float) -> string {
+        return part(start, length) > 0
+            ? " L \{x0 + (x1 - x0) * part(start, length)} \{y0 + (y1 - y0) * part(start, length)}" : "";
+    }
+    // A quarter turn around (cx, cy), starting at `from` (0deg = straight up, clockwise).
+    pure function turn(start: float, cx: float, cy: float, from: angle) -> string {
+        return part(start, 17.279) > 0
+            ? " A 11 11 0 0 1 \{cx + 11 * sin(from + part(start, 17.279) * 90deg)} \{cy - 11 * cos(from + part(start, 17.279) * 90deg)}" : "";
+    }
 
     width: 44px;
     height: 44px;
@@ -374,25 +387,19 @@ export component GameTile inherits Rectangle {
         }
     }
 
-    if root.progress >= 0: Rectangle {
-        x: -5px;
-        y: -5px;
-        width: 54px;
-        height: 54px;
-        border-radius: 27px;
-        border-width: 3px;
-        border-color: Theme.border;
-    }
     if root.progress >= 0: Path {
-        x: -5px;
-        y: -5px;
-        width: 54px;
-        height: 54px;
-        viewbox-width: 54;
-        viewbox-height: 54;
-        commands: "M 27 3 A 24 24 0 \{root.done > 0.5 ? 1 : 0} 1 \{root.end-x} \{root.end-y}";
+        width: 44px;
+        height: 44px;
+        viewbox-width: 44;
+        viewbox-height: 44;
+        commands: "M 22 1"
+            + root.run(0, 10, 22, 1, 32, 1) + root.turn(10, 32, 12, 0deg)
+            + root.run(27.279, 20, 43, 12, 43, 32) + root.turn(47.279, 32, 32, 90deg)
+            + root.run(64.558, 20, 32, 43, 12, 43) + root.turn(84.558, 12, 32, 180deg)
+            + root.run(101.837, 20, 1, 32, 1, 12) + root.turn(121.837, 12, 12, 270deg)
+            + root.run(139.116, 10, 12, 1, 22, 1);
         stroke: Theme.accent;
-        stroke-width: 3px;
+        stroke-width: 2px;
         fill: transparent;
     }
 

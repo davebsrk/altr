@@ -270,7 +270,7 @@ export component AppWindow inherits Window {
     property <bool> task-card: busy && progress != "" && !opening;
     property <bool> game-running: is-valorant ? valorant-running : league-running;
 
-    // Ring progress for a game tile: shown only while that game updates and isn't selected.
+    // Border progress for a game tile: shown only while that game updates and isn't selected.
     pure function ring(g: GameKind) -> float {
         return busy && updating && updating-game == g && game != g ? progress-fraction : -1;
     }

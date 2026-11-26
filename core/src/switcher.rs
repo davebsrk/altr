@@ -25,8 +25,8 @@ fn ids(game: Game) -> (&'static str, &'static str) {
 }
 
 /// A patch state that hasn't settled yet: the client is asking Riot for the latest version or,
-/// for a few seconds right after signing in, checking the games' dependencies, which it reports
-/// as an update with nothing to download (seen live for both games, one of them up to date).
+/// after signing in, checking the games' dependencies, which it reports as an update with
+/// nothing to download (seen live for both games, one of them up to date, for well over 10 s).
 fn settling(state: &GameState) -> bool {
     match state {
         GameState::Checking => true,
@@ -35,23 +35,21 @@ fn settling(state: &GameState) -> bool {
     }
 }
 
+/// A game is really being patched: something is downloading or has progressed, as opposed to
+/// the dependency check above or a patch that is still only being prepared.
+fn patching(state: &GameState) -> bool {
+    matches!(state, GameState::Updating { .. }) && !settling(state)
+}
+
 fn ensure_nothing_open() -> Result<()> {
     if let Some(what) = riot::blocking_process() {
         return Err(format!("{what} está abierto. Ciérralo antes de cambiar de cuenta."));
     }
-    // Switching restarts the client, which would cut a running download short.
+    // Switching restarts the client, which would cut a running download short. A dependency
+    // check or a patch with nothing downloaded yet loses nothing: the client starts it again.
     for game in [Game::Valorant, Game::League] {
         let (product, name) = ids(game);
-        let mut state = riot::game_state(product);
-        // An "update" with nothing to download may be that dependency check: give it a moment.
-        for _ in 0..10 {
-            if !matches!(state, GameState::Updating { .. }) || !settling(&state) {
-                break;
-            }
-            std::thread::sleep(Duration::from_secs(1));
-            state = riot::game_state(product);
-        }
-        if let GameState::Updating { .. } = state {
+        if patching(&riot::game_state(product)) {
             return Err(format!("{name} se está actualizando. Espera a que termine o cancélalo."));
         }
     }
@@ -135,6 +133,7 @@ fn rehide(me: &Identity, progress: Progress) -> Result<()> {
 /// Restarts the (hidden) Riot Client signed in as `target`.
 pub fn switch_to(store: &mut Store, target: &str, progress: Progress) -> Result<String> {
     let account = store.find(target).ok_or("Esa cuenta ya no existe.")?.clone();
+    progress(&format!("Cambiando a {}…", account.riot_id()), None);
     ensure_nothing_open()?;
     let session = vault::load(target)
         .map_err(|_| format!("No hay sesión guardada para {}; {LOGIN_HINT}.", account.riot_id()))?;
@@ -393,12 +392,22 @@ pub fn client_lock() -> MutexGuard<'static, ()> {
     CLIENT_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Whether each game (Valorant, LoL) has an update waiting or in progress. `false` when unknown.
+/// What an update check can say about a game right now: `Some(pending)`, or `None` while its
+/// state is still settling (or, with `silent`, while a just-woken client says nothing yet).
+/// On the `last` look everything gets an answer, and "still settling" counts as no update.
+fn known(state: &GameState, silent: bool, last: bool) -> Option<bool> {
+    (last || !(silent || settling(state))).then(|| *state == GameState::NeedsUpdate || patching(state))
+}
+
+/// Reports whether each game (Valorant, LoL) has an update waiting or in progress, through
+/// `report(valorant, league)`: each as soon as its state is settled (`None` until then, so one
+/// game's dependency check doesn't hold back the other's answer), and both on the last call.
+/// `false` when unknown.
 ///
 /// A closed or signed-out client hides its patch state (it starts signed out with Windows, and
 /// the hidden one signs out when the game closes), so with `wake` it is first signed in hidden
 /// with the session on disk, as Play does. Not while a game, Riot's window or an action is open.
-pub fn pending_updates(wake: bool) -> (bool, bool) {
+pub fn pending_updates(wake: bool, report: &dyn Fn(Option<bool>, Option<bool>)) {
     let wake = wake
         && !matches!(riot::client_state(), ClientState::LoggedIn(_))
         && CLIENT_LOCK.try_lock().is_ok_and(|_guard| {
@@ -411,10 +420,13 @@ pub fn pending_updates(wake: bool) -> (bool, bool) {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let states = [riot::game_state("valorant"), riot::game_state("league_of_legends")];
-        let waiting = states.iter().any(settling) || (wake && states.iter().all(|s| *s == GameState::Unknown));
-        if !waiting || Instant::now() >= deadline {
-            let pending = |s: &GameState| matches!(s, GameState::NeedsUpdate | GameState::Updating { .. });
-            return (pending(&states[0]), pending(&states[1]));
+        let silent = wake && states.iter().all(|s| *s == GameState::Unknown);
+        // A dependency check that outlasts the wait is still no update: flagging it would
+        // offer "Actualizar" on a game that is up to date.
+        let last = Instant::now() >= deadline || !(silent || states.iter().any(settling));
+        report(known(&states[0], silent, last), known(&states[1], silent, last));
+        if last {
+            return;
         }
         std::thread::sleep(Duration::from_secs(1));
     }
@@ -422,15 +434,43 @@ pub fn pending_updates(wake: bool) -> (bool, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{GameState, settling};
+    use super::{GameState, known, patching, settling};
+
+    #[test]
+    fn update_answers() {
+        let dependency_check = GameState::Updating { percent: 0.0, downloaded: 0, total: 0 };
+        let downloading = GameState::Updating { percent: 4.0, downloaded: 330, total: 8_200 };
+        // Settled states answer at once, whatever the other game is doing.
+        assert_eq!(known(&GameState::NeedsUpdate, false, false), Some(true));
+        assert_eq!(known(&GameState::UpToDate, false, false), Some(false));
+        assert_eq!(known(&downloading, false, false), Some(true));
+        assert_eq!(known(&GameState::Unknown, false, false), Some(false));
+        // Unsettled ones wait, and are no update if they never settle.
+        for state in [GameState::Checking, dependency_check] {
+            assert_eq!(known(&state, false, false), None);
+            assert_eq!(known(&state, false, true), Some(false));
+        }
+        // A client that was just woken and says nothing yet: wait for it, too.
+        assert_eq!(known(&GameState::Unknown, true, false), None);
+        assert_eq!(known(&GameState::Unknown, true, true), Some(false));
+    }
 
     #[test]
     fn unsettled_patch_states() {
         assert!(settling(&GameState::Checking));
-        // The dependency check right after signing in: an "update" with nothing to download.
-        assert!(settling(&GameState::Updating { percent: 0.0, downloaded: 0, total: 0 }));
-        assert!(!settling(&GameState::Updating { percent: 0.0, downloaded: 0, total: 5_000_000 }));
-        assert!(!settling(&GameState::Updating { percent: 12.0, downloaded: 0, total: 0 }));
+        // The dependency check after signing in: an "update" with nothing to download. It must
+        // neither block an account switch nor count as a pending update.
+        let dependency_check = GameState::Updating { percent: 0.0, downloaded: 0, total: 0 };
+        assert!(settling(&dependency_check) && !patching(&dependency_check));
+        for real in [
+            GameState::Updating { percent: 0.0, downloaded: 0, total: 5_000_000 },
+            GameState::Updating { percent: 12.0, downloaded: 0, total: 0 },
+        ] {
+            assert!(!settling(&real) && patching(&real));
+        }
+        for state in [GameState::UpToDate, GameState::NeedsUpdate, GameState::Unknown, GameState::Checking] {
+            assert!(!patching(&state));
+        }
         for state in [GameState::UpToDate, GameState::NeedsUpdate, GameState::Unknown] {
             assert!(!settling(&state));
         }

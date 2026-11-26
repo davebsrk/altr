@@ -131,6 +131,17 @@ impl Snapshot {
         if self.wants("--uitest") {
             ui_test(ui)?;
         }
+        // `--switch N`: starts the real "switch account" action on demo account N and checks
+        // that its label is on screen at once, before the action reports anything. The action
+        // itself can't get anywhere: no demo account has a saved session.
+        if let Some(i) = self.number("--switch") {
+            ui.invoke_switch_account(i);
+            let shown = ui.get_busy() && ui.get_progress() == "Cambiando de cuenta…";
+            println!("{} an action shows its label at once", if shown { "PASS" } else { "FAIL" });
+            if !shown {
+                return Err(io::Error::other("the action started without a label"));
+            }
+        }
         // One wheel turn down over the content (e.g. Ajustes at the minimum size).
         if self.wants("--scroll") {
             use slint::platform::WindowEvent;
@@ -320,6 +331,26 @@ fn ui_test(ui: &AppWindow) -> io::Result<()> {
     ctrl("2");
     tap(Key::Return.into());
     check("keys still work after the menus and dialogs", took(&log) == ["switch 1"]);
+
+    // Closing the window: with the tray off it ends ALTR, but never in the middle of an action.
+    ui.set_tray_enabled(false);
+    ui.set_busy(true);
+    window.dispatch_event(WindowEvent::CloseRequested);
+    pump();
+    check("closing mid-action with the tray off keeps the window and warns", window.is_visible() && ui.get_toast_visible() && ui.get_toast_error());
+    ui.set_busy(false);
+    ui.set_toast_visible(false);
+    ui.set_tray_enabled(true);
+    window.dispatch_event(WindowEvent::CloseRequested);
+    pump();
+    check("closing with the tray on hides the window", !window.is_visible());
+    ui.show().map_err(io::Error::other)?;
+    ui.set_tray_enabled(false);
+    window.dispatch_event(WindowEvent::CloseRequested);
+    pump();
+    check("closing with the tray off and nothing running closes", !window.is_visible());
+    ui.set_tray_enabled(true);
+    ui.show().map_err(io::Error::other)?;
 
     if failures > 0 {
         return Err(io::Error::other(format!("{failures} UI checks failed")));

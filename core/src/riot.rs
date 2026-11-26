@@ -759,6 +759,12 @@ mod tests {
             state(r#"{"error":null,"progress":{"overallProgress":0.0,"repairProgress":12.0},"state":"Repairing"}"#),
             GameState::Updating { percent: 12.0, downloaded: 0, total: 0 }
         );
+        // Captured live after signing in, for a game that was up to date: the dependency check
+        // reads as an update with nothing to download (`switcher::settling` tells it apart).
+        assert_eq!(
+            state(r#"{"error":null,"launchable":true,"previousState":"CheckingForUpdate","progress":{"currentSpeedMbps":0,"overallProgress":0.0,"phase":"none","repairProgress":0.0,"totalBytesDone":0,"totalBytesDownloaded":0,"totalBytesToDo":0,"totalBytesToDownload":0},"repairCode":"","state":"DependencyUpdate"}"#),
+            GameState::Updating { percent: 0.0, downloaded: 0, total: 0 }
+        );
         assert_eq!(state(r#"{"error":null,"state":"Paused"}"#), GameState::NeedsUpdate);
         assert!(matches!(state(r#"{"error":"disk full","state":"OutOfDate"}"#), GameState::Failed(_)));
         assert_eq!(state(r#"{"error":null,"state":"CheckingForUpdate"}"#), GameState::Checking);
